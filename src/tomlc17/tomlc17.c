@@ -2683,7 +2683,14 @@ static int scan_float(scanner_t *sp, token_t *tok) {
   // Reported/fixed upstream: https://github.com/cktan/tomlc17/pull/50
   uint64_t fp64_bits;
   memcpy(&fp64_bits, &fp64, sizeof(fp64_bits));
-  int is_ok_subnormal = (errno == ERANGE) && fp64_bits != 0 && isfinite(fp64);
+  // Shift out the sign bit before testing: a genuine underflow-to-zero
+  // rounds to -0.0 for a negative literal, whose bit pattern (sign bit
+  // set, exponent and mantissa all zero) is nonzero as a raw uint64_t
+  // comparison, incorrectly passing the "is this a real subnormal, not a
+  // zero" check below. Comparing only the exponent+mantissa bits (as
+  // "<<1" leaves them, having discarded the sign bit) correctly rejects
+  // -0.0 the same way +0.0 is already rejected.
+  int is_ok_subnormal = (errno == ERANGE) && (fp64_bits << 1) != 0 && isfinite(fp64);
   if ((errno && !is_ok_subnormal) || *q || q == buffer) {
     return SETERROR(sp->ebuf, lineno, "error parsing float");
   }

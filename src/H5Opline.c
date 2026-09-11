@@ -611,12 +611,24 @@ done:
  *        -- H5O__pline_copy()'s in-memory copy shares SRC's on-disk
  *        locator (aux_loc) verbatim, but that locator is only meaningful
  *        within the file it was written to, so it must never reach
- *        FILE_DST unmodified.  Reuses H5Z_blob_write(), the same routine
- *        H5D__create() calls for a newly created dataset, so a blob
- *        attached via a filter's custom write_blob callback is
- *        re-invoked against FILE_DST rather than the destination
- *        silently inheriting bytes that only make sense in the source
- *        file.
+ *        FILE_DST unmodified.
+ *
+ *        NATIVE_SRC is the message as H5O__pline_decode() produced it,
+ *        which populates aux_loc but never aux itself (only
+ *        H5Z_blob_read(), called from the dataset-open path, does that)
+ *        -- so for the common case of copying an object that was not
+ *        already open with its blob resident in memory, aux is NULL here
+ *        and H5Z_blob_write() below would otherwise skip every filter
+ *        (it does nothing for aux == NULL), silently carrying SRC's
+ *        locator into FILE_DST unmodified.  H5Z_blob_read() first
+ *        materializes each filter's blob from FILE_SRC via the
+ *        still-source-relative aux_loc this copy inherited (a no-op for
+ *        any filter whose aux is already populated), and only then does
+ *        H5Z_blob_write() -- the same routine H5D__create() calls for a
+ *        newly created dataset -- re-persist it into FILE_DST with a
+ *        fresh locator, re-invoking a filter's custom write_blob
+ *        callback against FILE_DST rather than letting the destination
+ *        silently inherit bytes that only make sense in the source file.
  *
  * Return:    Success:    Ptr to the newly allocated destination message.
  *
@@ -625,20 +637,24 @@ done:
  *-------------------------------------------------------------------------
  */
 static void *
-H5O__pline_copy_file(H5F_t H5_ATTR_UNUSED *file_src, const H5O_msg_class_t H5_ATTR_UNUSED *mesg_type,
-                     void *native_src, H5F_t *file_dst, bool H5_ATTR_UNUSED *recompute_size,
-                     H5O_copy_t H5_ATTR_UNUSED *cpy_info, void H5_ATTR_UNUSED *udata)
+H5O__pline_copy_file(H5F_t *file_src, const H5O_msg_class_t H5_ATTR_UNUSED *mesg_type, void *native_src,
+                     H5F_t *file_dst, bool H5_ATTR_UNUSED *recompute_size, H5O_copy_t H5_ATTR_UNUSED *cpy_info,
+                     void H5_ATTR_UNUSED *udata)
 {
     H5O_pline_t *dst_pline = NULL;
     void        *ret_value = NULL;
 
     FUNC_ENTER_PACKAGE
 
+    assert(file_src);
     assert(native_src);
     assert(file_dst);
 
     if (NULL == (dst_pline = (H5O_pline_t *)H5O__pline_copy(native_src, NULL)))
         HGOTO_ERROR(H5E_PLINE, H5E_CANTCOPY, NULL, "unable to copy pipeline message");
+
+    if (H5Z_blob_read(file_src, dst_pline) < 0)
+        HGOTO_ERROR(H5E_PLINE, H5E_READERROR, NULL, "unable to read filter blob from source file");
 
     if (H5Z_blob_write(file_dst, dst_pline) < 0)
         HGOTO_ERROR(H5E_PLINE, H5E_CANTINIT, NULL, "unable to write filter blob to destination file");

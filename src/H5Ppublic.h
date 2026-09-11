@@ -2950,9 +2950,13 @@ H5_DLL herr_t H5Pmodify_filter_by_idx(hid_t plist_id, unsigned filter_idx, unsig
  *                   bytes into property-list-owned storage before returning;
  *                   the caller's buffer may be freed or reused immediately.
  * \param[in] size   Length of \p buf in bytes.  There is no fixed upper
- *                   bound analogous to #H5Z_CONFIG_STRING_MAX; the practical
- *                   limit is available memory and, in parallel jobs, the
- *                   cost of broadcasting the blob locator.
+ *                   bound analogous to #H5Z_CONFIG_STRING_MAX for storage in
+ *                   the file itself; the practical limit there is available
+ *                   memory. (H5Pencode()/H5Pdecode() round-tripping of a
+ *                   DCPL carrying a blob is a separate, narrower channel: it
+ *                   is capped, currently at 64 MiB, since that decoder has
+ *                   no way to bound a corrupt or malicious buffer's claimed
+ *                   length against the buffer's real size.)
  *
  * \return \herr_t
  *
@@ -2963,6 +2967,13 @@ H5_DLL herr_t H5Pmodify_filter_by_idx(hid_t plist_id, unsigned filter_idx, unsig
  *          callback (or the default global-heap writer) at H5Dcreate() time
  *          and recovered via \c read_blob (or the default reader) at
  *          H5Dopen() time.
+ *
+ *          \p plist_id must be a dataset creation property list.  A blob
+ *          attached to any other object creation property list (e.g. a
+ *          group creation property list) is rejected: only the
+ *          dataset-creation code path ever calls a filter's \c write_blob
+ *          (or the default writer), so a blob accepted there would never
+ *          actually be persisted.
  *
  *          The blob channel exists to carry configuration data that does
  *          not fit through the parameter-string layer (for example,

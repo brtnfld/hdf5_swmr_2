@@ -25,12 +25,12 @@ vendored files are identified by their SHA-256 checksums:
 
 Use these hashes to identify the exact upstream commit.  They are the
 checksums of the **pristine** upstream files; `tomlc17.c` as it sits in this
-directory carries two local changes (see below) and hashes to
-`9aaadec08393ef5c33c3ecf51e4a83f047549eae6e761a02c208af14b3d6d4fc`.
+directory carries three local changes (see below) and hashes to
+`2568604e512865c0146f0f309271441b5ca1f3b0b9b8b3257eef96b8988d7458`.
 
 ## HDF5-local modifications
 
-**Two**, both in `tomlc17.c` `scan_float()`.  They are otherwise the exact
+**Three**, all in `tomlc17.c` `scan_float()`.  They are otherwise the exact
 upstream sources, and are intentionally excluded from the HDF5 clang-format
 pass (see `.github/workflows/clang-format-check.yml` and `bin/format_source`)
 so that future upstream updates can be dropped in without any re-formatting
@@ -87,11 +87,41 @@ Reported as <https://github.com/cktan/tomlc17/issues/49>, fix proposed as
 <https://github.com/cktan/tomlc17/pull/50>. Not yet merged upstream at the time
 of this vendoring, hence the second delta. **Drop it at the next update**:
 once a tag containing that fix exists, replacing these files with that tag
-leaves no local change for this issue.
+leaves no local change for this issue -- but see the third change below first,
+since PR #50's form of the check (as transcribed here) has a bug of its own
+that a straight adoption of the upstream tag would reintroduce.
 
 Covered by the same `canon-10` test above; the failure is otherwise silent on
 compilers that do not default to FTZ, so it will not reproduce locally on a
 typical GCC/Clang build.
+
+### `scan_float()`: sign-bit fix on top of the flush-to-zero fix, local only
+
+A third change, on top of the previous one, not present in PR #50 (as
+transcribed here) at all: `fp64_bits != 0` treats the raw bit pattern of a
+genuine `-0.0` (sign bit set, exponent and mantissa both zero) as "nonzero,"
+because the comparison includes the sign bit. A TOML literal that truly
+underflows to zero when negative -- e.g. `x = -1e-400`, far below even the
+smallest subnormal -- has that exact bit pattern, so it was silently
+*accepted* as if it were a correctly-rounded subnormal instead of rejected as
+a parse error, while the equivalent positive literal (`x = 1e-400`, bit
+pattern all zero) was still correctly rejected. Asymmetric, silent acceptance
+of malformed input on the negative side only.
+
+The fix shifts the sign bit out before comparing: `(fp64_bits << 1) != 0`,
+which is nonzero exactly when the exponent or mantissa bits are, regardless
+of sign -- so `-0.0` and `+0.0` are now rejected identically.
+
+Not filed upstream as a separate issue since PR #50 has not merged yet; when
+adopting a tag containing PR #50's fix, re-verify this sign-bit case
+(`-1e-400` should still be a parse error) and re-apply this change if the
+upstream form doesn't already handle it. **Drop it once upstream's own fix
+handles the sign bit correctly** -- check by grepping for `fp64_bits` and
+confirming the comparison masks or shifts out the sign bit, not a bare
+`!= 0`.
+
+No dedicated test exercises this path yet (a negative underflow literal like
+`-1e-400`); add one alongside any future work in this area.
 
 ## Files
 
@@ -116,6 +146,10 @@ typical GCC/Clang build.
    <https://github.com/cktan/tomlc17/pull/50> (grep for `fp64_bits`).  If it
    does, drop that local change too and delete its section above.  If not,
    re-apply it verbatim.
-4c. Record the resulting file's new post-patch checksum in the table above.
+4c. Check whether the new tag's form of the flush-to-zero fix already rejects
+   a negative underflow literal (e.g. `x = -1e-400` should be a parse error,
+   same as `x = 1e-400`).  If it does, drop the sign-bit change too and
+   delete its section above.  If not, re-apply it verbatim.
+4d. Record the resulting file's new post-patch checksum in the table above.
 5. Do **not** run clang-format on these files.
 6. Run the HDF5 test suite (`ctest -R tfilter2`) to verify compatibility.

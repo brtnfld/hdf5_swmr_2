@@ -285,17 +285,31 @@ typedef size_t (*H5Z_func2_t)(unsigned int flags, size_t cd_nelmts, const unsign
 /**
  * \brief Fixed-size on-disk locator for a filter blob's global-heap object.
  *
- * Opaque to plugin authors; the library passes it unchanged from
- * \c write_blob to the pipeline-message encoder and later from the decoder
- * to \c read_blob.  Plugin callbacks that implement custom storage may store
- * whatever they need in the two fields, as long as \c read_blob can recover
- * the blob from them.
+ * The library passes this struct unchanged from \c write_blob to the
+ * pipeline-message encoder and later from the decoder to \c read_blob.  Its
+ * field names and doc comments describe the library's own default
+ * (global-heap) storage; a filter implementing custom storage (a non-NULL
+ * \c write_blob/\c read_blob pair) may instead treat both fields as two
+ * opaque scalars and store whatever two values it needs in them, subject to
+ * two constraints the on-disk encoding imposes regardless of who wrote them:
+ * \li \c addr must never equal #HADDR_UNDEF; that value is the sentinel the
+ *     library uses internally to mean "no blob written yet," and
+ *     \c write_blob returning it is treated as a failure to persist the
+ *     blob at all.
+ * \li \c idx, though declared \c size_t here, is encoded on disk in 4 bytes;
+ *     a \c write_blob that returns a value outside the range of a 32-bit
+ *     unsigned integer fails at write time rather than being silently
+ *     truncated on the next encode.
  *
  * \since 3.0.0
  */
 typedef struct H5Z_blob_loc_t {
-    haddr_t addr; /**< Global heap collection address           */
-    size_t  idx;  /**< Object index within the collection       */
+    haddr_t addr; /**< Global heap collection address for the library's
+                    *  default storage; must not be #HADDR_UNDEF for any
+                    *  custom storage scheme either                    */
+    size_t  idx;  /**< Object index within the collection for the library's
+                    *  default storage; must fit a 32-bit unsigned integer
+                    *  for any custom storage scheme too                */
 } H5Z_blob_loc_t;
 
 /**
@@ -311,7 +325,12 @@ typedef struct H5Z_blob_loc_t {
  *
  * \details Called once per blob-bearing filter during H5Dcreate(), after the
  *          \c set_local callback runs.  If the filter class leaves this field
- *          NULL, the library uses its default global-heap (H5HG) writer.
+ *          NULL, the library uses its default global-heap (H5HG) writer --
+ *          but only if \c read_blob is \e also left NULL: #H5Zregister and
+ *          #H5Zregister3 reject a class supplying exactly one of the two,
+ *          since a filter that persists its blob one way but recovers it the
+ *          library's way (or vice versa) misinterprets whichever locator it
+ *          is handed.
  *
  * \attention In a parallel job, this callback runs on every rank and \b must
  *            perform identical file-modifying operations on every rank (or
@@ -338,10 +357,15 @@ typedef herr_t (*H5Z_write_blob_func_t)(hid_t file_id, const void *buf, size_t s
  * \return Non-negative on success; negative on failure.
  *
  * \details If the filter class leaves this field NULL, the library uses its
- *          default global-heap (H5HG) reader.  A filter whose blob is a
- *          reference to another object (e.g. a mask dataset) may dereference
- *          it here using \p file_id and cache the result for later
- *          \c H5Z_func2_t invocations.
+ *          default global-heap (H5HG) reader -- but only if \c write_blob is
+ *          \e also left NULL; see \c write_blob's own documentation for why
+ *          the two are registered as a pair, never one without the other.
+ *          A non-NULL \c read_blob additionally requires a non-NULL
+ *          \c close_blob (below): the library cannot safely assume a buffer
+ *          this callback allocated came from its own allocator. A filter
+ *          whose blob is a reference to another object (e.g. a mask
+ *          dataset) may dereference it here using \p file_id and cache the
+ *          result for later \c H5Z_func2_t invocations.
  *
  * \since 3.0.0
  */
@@ -355,8 +379,15 @@ typedef herr_t (*H5Z_read_blob_func_t)(hid_t file_id, H5Z_blob_loc_t loc, void *
  *
  * \return Non-negative on success; negative on failure.
  *
- * \details Called at dataset close.  If the filter class leaves this field
- *          NULL, the library releases the buffer itself.
+ * \details The blob buffer is reference-counted: a single H5Dcreate() may
+ *          share one in-memory buffer across several dataset copies (e.g.
+ *          via H5Pcopy() of the creating property list), and this callback
+ *          fires only when the last reference is released, which is not
+ *          necessarily at that dataset's own close if a copy outlives it.
+ *          #H5Zregister and #H5Zregister3 require this field to be non-NULL
+ *          whenever \c read_blob is; leaving it NULL is valid only when
+ *          \c read_blob is also NULL, in which case the library both
+ *          allocates and releases the buffer itself.
  *
  * \since 3.0.0
  */

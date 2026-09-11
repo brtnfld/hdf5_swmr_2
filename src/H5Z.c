@@ -441,12 +441,28 @@ H5Z_register(const H5Z_class2_t *cls)
     assert(cls);
     assert(cls->id >= 0 && cls->id <= H5Z_FILTER_MAX);
 
+    /* Sanity check the cross-cast this function relies on: H5Z_class3_t's
+     * first 8 fields must exactly match H5Z_class2_t's layout, field for
+     * field, or the version-gated reads below (and every other H5Z_class2_t*
+     * cast of a H5Z_class3_t* in this file) would be unsafe. */
+    HDcompile_assert(offsetof(H5Z_class3_t, version) == offsetof(H5Z_class2_t, version));
+    HDcompile_assert(offsetof(H5Z_class3_t, id) == offsetof(H5Z_class2_t, id));
+    HDcompile_assert(offsetof(H5Z_class3_t, encoder_present) == offsetof(H5Z_class2_t, encoder_present));
+    HDcompile_assert(offsetof(H5Z_class3_t, decoder_present) == offsetof(H5Z_class2_t, decoder_present));
+    HDcompile_assert(offsetof(H5Z_class3_t, name) == offsetof(H5Z_class2_t, name));
+    HDcompile_assert(offsetof(H5Z_class3_t, can_apply) == offsetof(H5Z_class2_t, can_apply));
+    HDcompile_assert(offsetof(H5Z_class3_t, set_local) == offsetof(H5Z_class2_t, set_local));
+    HDcompile_assert(offsetof(H5Z_class3_t, filter) == offsetof(H5Z_class2_t, filter));
+
     /* H5Z_register() is typed as const H5Z_class2_t *, but external callers
      * (H5Zregister, H5PL_load) may pass a H5Z_class3_t * cast to that type.
-     * Re-sniff the version here so that the description field
-     * (at the same offset as can_apply in H5Z_class2_t) is never misread.
-     * Do NOT "simplify" away this check - the v3 dispatch must happen inside
-     * H5Z_register, not only at the H5Zregister API boundary. */
+     * H5Z_class3_t's first 8 fields (version..filter) are laid out identically
+     * to all of H5Z_class2_t, so that prefix reads safely through either
+     * struct type -- but everything past it (set_config, get_config,
+     * write_blob/read_blob/close_blob, description) is v3-only and must not be
+     * touched until the version check below confirms which struct is actually
+     * present. Do NOT "simplify" away this check - the v3 dispatch must happen
+     * inside H5Z_register, not only at the H5Zregister API boundary. */
     if (cls->version == H5Z_CLASS3_T_VERS_INTERNAL) {
         if (H5Z_register3((const H5Z_class3_t *)cls) < 0)
             HGOTO_ERROR(H5E_PLINE, H5E_CANTINIT, FAIL, "unable to register filter");
@@ -2350,6 +2366,16 @@ H5Z_blob_write(H5F_t *f, H5O_pline_t *pline)
         if (!H5_addr_defined(loc.addr))
             HGOTO_ERROR(H5E_PLINE, H5E_CANTINSERT, FAIL, "filter blob was not assigned a valid locator");
 
+        /* The on-disk BLOB extension block encodes idx in 4 bytes
+         * (H5O__pline_encode(), H5Opline.c) regardless of storage scheme.
+         * H5Z_blob_loc_t.idx is size_t, and a custom write_blob is free to
+         * put "whatever it needs" there (H5Zdevelop.h) -- catch an
+         * unencodable value here, at write time, rather than silently
+         * truncating it into a different value on the next encode. */
+        if (loc.idx > UINT32_MAX)
+            HGOTO_ERROR(H5E_PLINE, H5E_BADVALUE, FAIL,
+                        "filter blob locator index %zu exceeds the on-disk encoding's 32-bit range", loc.idx);
+
 #if defined(H5_HAVE_PARALLEL) && !defined(NDEBUG)
         /* Debug-build safety net: every rank just performed what should be
          * an identical write, so every rank must have landed on the same
@@ -2413,8 +2439,32 @@ H5Z_blob_read(H5F_t *f, H5O_pline_t *pline)
 
         (void)H5Z_find_entry(true, fi->id, &entry);
 
-        if (entry && entry->read_blob) {
+        /* Dispatch on the persisted storage-ownership bit (set by
+         * H5Z_blob_write() at write time, decoded from disk by
+         * H5O__pline_decode()), not on whether a read_blob callback
+         * happens to be registered right now -- the same filter ID could
+         * be re-registered between write and read with a different
+         * read_blob configuration than whichever wrote this particular
+         * blob, and dispatching on current registration would then
+         * either hand a real global-heap address to a custom read_blob
+         * or hand an opaque, filter-defined value to H5HG_read() as if
+         * it were one. */
+        if (fi->blob_default_storage) {
+            H5HG_t hobj;
+
+            hobj.addr = fi->aux_loc.addr;
+            hobj.idx  = fi->aux_loc.idx;
+            if (NULL == (data = H5HG_read(f, &hobj, NULL, &size)))
+                HGOTO_ERROR(H5E_PLINE, H5E_READERROR, FAIL, "unable to read filter blob from global heap");
+            from_callback = false; /* H5HG_read allocates with H5MM */
+        }
+        else {
             hid_t file_id;
+
+            if (!(entry && entry->read_blob))
+                HGOTO_ERROR(H5E_PLINE, H5E_NOFILTER, FAIL,
+                            "filter blob uses custom storage but its read_blob callback is not "
+                            "available; register or load the filter first");
 
             if ((file_id = H5F_get_id(f)) < 0)
                 HGOTO_ERROR(H5E_PLINE, H5E_CANTGET, FAIL, "can't get file ID for blob callback");
@@ -2425,15 +2475,6 @@ H5Z_blob_read(H5F_t *f, H5O_pline_t *pline)
             if (H5I_dec_ref(file_id) < 0)
                 HGOTO_ERROR(H5E_PLINE, H5E_CANTDEC, FAIL, "can't release file ID");
             from_callback = true;
-        }
-        else {
-            H5HG_t hobj;
-
-            hobj.addr = fi->aux_loc.addr;
-            hobj.idx  = fi->aux_loc.idx;
-            if (NULL == (data = H5HG_read(f, &hobj, NULL, &size)))
-                HGOTO_ERROR(H5E_PLINE, H5E_READERROR, FAIL, "unable to read filter blob from global heap");
-            from_callback = false; /* H5HG_read allocates with H5MM */
         }
 
         if (NULL ==

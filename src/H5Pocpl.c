@@ -1264,15 +1264,33 @@ done:
 static herr_t
 H5P__ocrt_pipeline_enc(const void *value, void **_pp, size_t *size)
 {
-    const H5O_pline_t *pline = (const H5O_pline_t *)value;
-    uint8_t          **pp    = (uint8_t **)_pp;
-    size_t             u; /* Local index variable */
+    const H5O_pline_t *pline     = (const H5O_pline_t *)value;
+    uint8_t          **pp        = (uint8_t **)_pp;
+    size_t             u;                          /* Local index variable */
+    herr_t             ret_value = SUCCEED;
 
-    FUNC_ENTER_PACKAGE_NOERR
+    FUNC_ENTER_PACKAGE
 
     assert(pline);
     assert(size);
     HDcompile_assert(sizeof(size_t) <= sizeof(uint64_t));
+
+    /* A blob larger than H5Z_BLOB_DECODE_MAX would encode here without
+     * complaint but could then never be decoded (H5P__ocrt_pipeline_dec()
+     * rejects any encoded blob length over that bound, since it has no
+     * end-of-buffer pointer to validate a larger one safely against) --
+     * reject it here instead, so an oversized blob fails loudly at
+     * H5Pencode() time rather than producing a buffer that silently fails
+     * to decode later, possibly on a different process or machine.  This
+     * is specific to the H5Pencode()/H5Pdecode() serialization of a DCPL;
+     * a blob of any size may still be attached via H5Pappend_filter_blob()
+     * and persisted directly to a file with no such limit. */
+    for (u = 0; u < pline->nused; u++)
+        if (pline->filter[u].aux && pline->filter[u].aux->size > H5Z_BLOB_DECODE_MAX)
+            HGOTO_ERROR(H5E_PLIST, H5E_BADVALUE, FAIL,
+                        "filter blob of %zu bytes exceeds the %zu-byte limit H5Pencode()/H5Pdecode() can "
+                        "round-trip",
+                        pline->filter[u].aux->size, (size_t)H5Z_BLOB_DECODE_MAX);
 
     if (NULL != *pp) {
         unsigned enc_size;
@@ -1372,7 +1390,8 @@ H5P__ocrt_pipeline_enc(const void *value, void **_pp, size_t *size)
             *size += 8 + pline->filter[u].aux->size; /* aux_size + blob bytes */
     }                                                /* end for */
 
-    FUNC_LEAVE_NOAPI(SUCCEED)
+done:
+    FUNC_LEAVE_NOAPI(ret_value)
 } /* end H5P__ocrt_pipeline_enc() */
 
 /*-------------------------------------------------------------------------
@@ -2420,21 +2439,12 @@ H5Pappend_filter_blob(hid_t plist_id, H5Z_filter_t filter, unsigned int flags, c
             HGOTO_ERROR(H5E_PLINE, H5E_NOFILTER, FAIL, "filter not found; register or load it first");
     }
 
-    /* Copy the blob into DCPL-owned storage so the caller's buffer may be
-     * freed or reused immediately after this call returns */
-    if (size > 0) {
-        if (NULL == (aux_copy = H5MM_malloc(size)))
-            HGOTO_ERROR(H5E_RESOURCE, H5E_NOSPACE, FAIL, "memory allocation failed for filter blob");
-        H5MM_memcpy(aux_copy, buf, size);
-        if (NULL == (aux_buf = H5Z_blob_buf_new(aux_copy, size, false, NULL)))
-            HGOTO_ERROR(H5E_RESOURCE, H5E_NOSPACE, FAIL, "memory allocation failed for blob buffer");
-    }
-
     /* Get the plist structure */
     if (NULL == (plist = H5P_object_verify(plist_id, H5P_OBJECT_CREATE, false)))
         HGOTO_ERROR(H5E_ID, H5E_BADID, FAIL, "can't find object for ID");
 
-    /* Restrict to dataset creation property lists.  H5Z_blob_write() --
+    /* Restrict to dataset creation property lists, before doing any of the
+     * work below that a rejection would just discard.  H5Z_blob_write() --
      * the routine that actually persists the blob and assigns it a valid
      * locator -- is called only from the dataset-creation path
      * (H5D__update_oh_info()); a group creation property list's pipeline
@@ -2448,6 +2458,16 @@ H5Pappend_filter_blob(hid_t plist_id, H5Z_filter_t filter, unsigned int flags, c
     if (true != H5P_isa_class(plist_id, H5P_DATASET_CREATE))
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
                     "H5Pappend_filter_blob() is only valid on a dataset creation property list");
+
+    /* Copy the blob into DCPL-owned storage so the caller's buffer may be
+     * freed or reused immediately after this call returns */
+    if (size > 0) {
+        if (NULL == (aux_copy = H5MM_malloc(size)))
+            HGOTO_ERROR(H5E_RESOURCE, H5E_NOSPACE, FAIL, "memory allocation failed for filter blob");
+        H5MM_memcpy(aux_copy, buf, size);
+        if (NULL == (aux_buf = H5Z_blob_buf_new(aux_copy, size, false, NULL)))
+            HGOTO_ERROR(H5E_RESOURCE, H5E_NOSPACE, FAIL, "memory allocation failed for blob buffer");
+    }
 
     /* Get the pipeline property */
     if (H5P_peek(plist, H5O_CRT_PIPELINE_NAME, &pline) < 0)

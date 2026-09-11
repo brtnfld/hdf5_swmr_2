@@ -108,7 +108,10 @@ We would like to thank the many HDF5 community members who contributed to this r
    files without blobs are unaffected.
 
    `H5Pencode`/`H5Pdecode` serialize the blob bytes inline so an encoded DCPL
-   is self-contained, and `H5Pcopy` and `H5Ocopy` share the in-memory buffer
+   is self-contained, capped at 64 MiB per blob (`H5Pencode` rejects anything
+   larger, since the wire format has no way to validate a larger length
+   safely against the buffer at decode time); on-disk (global-heap) blob
+   storage has no such limit. `H5Pcopy` and `H5Ocopy` share the in-memory buffer
    by reference count rather than deep-copying it - `H5Ocopy` additionally
    re-persists the blob into the destination file and assigns it a fresh
    locator there, so `h5repack` carries blobs to the destination file with

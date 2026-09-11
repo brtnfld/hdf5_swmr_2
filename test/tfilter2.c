@@ -32,6 +32,8 @@ static const char *FILENAME[] = {"tfilter2",
                                  "tfilter2_blob_percopy",
                                  "tfilter2_blob_usecaseb",
                                  "tfilter2_blob_oversized",
+                                 "tfilter2_blob_ocopy_src",
+                                 "tfilter2_blob_ocopy_dst",
                                  NULL};
 
 /* -----------------------------------------------------------------------
@@ -2026,7 +2028,8 @@ test_config_string_canonicalization_growth(void)
         growth_filter_func, /* filter          */
         growth_set_config,  /* set_config      */
         NULL,               /* get_config      */
-        NULL,               /* description     */
+        NULL,               /* write_blob (remaining fields -- read_blob, close_blob,
+                              * description -- default to NULL)                     */
     };
     hid_t    dcpl = H5I_INVALID_HID;
     char    *raw  = NULL;
@@ -4071,6 +4074,7 @@ error:
  * time, not something the per-chunk filter pipeline touches on every
  * I/O call. */
 #define OVERSIZED_BLOB_SIZE (4 * 1024 * 1024) /* 4 MiB */
+#define ENCODE_BOUND_OVER_LIMIT ((size_t)(64 * 1024 * 1024) + 1) /* just over H5Z_BLOB_DECODE_MAX */
 static int
 test_blob_oversized_default_storage(hid_t fapl)
 {
@@ -4184,6 +4188,249 @@ error:
     free(blob);
     free(wdata);
     free(rdata);
+    return -1;
+}
+
+/* H5Ocopy of a blob-bearing dataset must re-persist the blob into the
+ * destination file's own global heap, not carry over the source file's
+ * locator verbatim. The source file is closed and reopened before the copy
+ * so the in-memory pipeline message only has the on-disk locator (aux_loc),
+ * not a live in-memory blob buffer (aux) -- the realistic case, and the one
+ * that exposed this as a no-op the first time it was "fixed". */
+static int
+test_blob_ocopy_relocation(hid_t fapl)
+{
+    static const H5Z_class3_t blob_cls = {
+        2,                      /* version         */
+        BLOB_DEFAULT_FILTER_ID, /* id              */
+        1,                      /* encoder_present */
+        1,                      /* decoder_present */
+        "blob_default_filter",  /* canonical_name  */
+        NULL,                   /* can_apply       */
+        NULL,                   /* set_local       */
+        blob_passthrough_func,  /* filter          */
+        NULL,                   /* set_config      */
+        NULL,                   /* get_config      */
+        NULL,                   /* write_blob: use default global-heap storage */
+        NULL,                   /* read_blob       */
+        NULL,                   /* close_blob      */
+        NULL,                   /* description     */
+    };
+    char           src_filename[1024], dst_filename[1024];
+    unsigned char *blob = NULL;
+    hid_t          src_file = H5I_INVALID_HID, dst_file = H5I_INVALID_HID, sid = H5I_INVALID_HID;
+    hid_t          dcpl = H5I_INVALID_HID, dcpl_out = H5I_INVALID_HID;
+    hid_t          dset = H5I_INVALID_HID;
+    hsize_t        dims[2] = {8, 8}, chunk[2] = {4, 4};
+    int            wdata[8][8], rdata[8][8];
+
+    TESTING("H5Ocopy: blob-bearing dataset relocates its blob to the destination file");
+
+    if (H5Zregister(&blob_cls) < 0)
+        TEST_ERROR;
+    if (NULL == (blob = (unsigned char *)malloc(BLOB_TEST_SIZE)))
+        TEST_ERROR;
+    blob_fill_pattern(blob, BLOB_TEST_SIZE);
+    for (int i = 0; i < 8; i++)
+        for (int j = 0; j < 8; j++)
+            wdata[i][j] = i * 8 + j;
+
+    if ((dcpl = H5Pcreate(H5P_DATASET_CREATE)) < 0)
+        TEST_ERROR;
+    if (H5Pset_chunk(dcpl, 2, chunk) < 0)
+        TEST_ERROR;
+    if (H5Pappend_filter_blob(dcpl, BLOB_DEFAULT_FILTER_ID, 0, blob, BLOB_TEST_SIZE) < 0)
+        TEST_ERROR;
+
+    h5_fixname(FILENAME[10], fapl, src_filename, sizeof(src_filename));
+    if ((src_file = H5Fcreate(src_filename, H5F_ACC_TRUNC, H5P_DEFAULT, fapl)) < 0)
+        TEST_ERROR;
+    if ((sid = H5Screate_simple(2, dims, NULL)) < 0)
+        TEST_ERROR;
+    if ((dset = H5Dcreate2(src_file, "dset", H5T_NATIVE_INT, sid, H5P_DEFAULT, dcpl, H5P_DEFAULT)) < 0)
+        TEST_ERROR;
+    if (H5Dwrite(dset, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, wdata) < 0)
+        TEST_ERROR;
+    if (H5Dclose(dset) < 0)
+        TEST_ERROR;
+    dset = H5I_INVALID_HID;
+    if (H5Fclose(src_file) < 0)
+        TEST_ERROR;
+    src_file = H5I_INVALID_HID;
+
+    /* Reopen the source (so the pipeline message in memory only carries the
+     * on-disk locator) and copy the dataset into a brand-new destination
+     * file */
+    if ((src_file = H5Fopen(src_filename, H5F_ACC_RDONLY, fapl)) < 0)
+        TEST_ERROR;
+    h5_fixname(FILENAME[11], fapl, dst_filename, sizeof(dst_filename));
+    if ((dst_file = H5Fcreate(dst_filename, H5F_ACC_TRUNC, H5P_DEFAULT, fapl)) < 0)
+        TEST_ERROR;
+    if (H5Ocopy(src_file, "dset", dst_file, "dset_copy", H5P_DEFAULT, H5P_DEFAULT) < 0)
+        TEST_ERROR;
+
+    /* The source file's own copy must still be readable after the copy */
+    if ((dset = H5Dopen2(src_file, "dset", H5P_DEFAULT)) < 0)
+        TEST_ERROR;
+    memset(rdata, 0, sizeof(rdata));
+    if (H5Dread(dset, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, rdata) < 0)
+        TEST_ERROR;
+    if (memcmp(wdata, rdata, sizeof(wdata)) != 0)
+        TEST_ERROR;
+    if (H5Dclose(dset) < 0)
+        TEST_ERROR;
+    dset = H5I_INVALID_HID;
+    if (H5Fclose(src_file) < 0)
+        TEST_ERROR;
+    src_file = H5I_INVALID_HID;
+
+    /* The destination copy must read back correctly and carry its own,
+     * independently-valid blob -- not the source file's locator verbatim */
+    if ((dset = H5Dopen2(dst_file, "dset_copy", H5P_DEFAULT)) < 0)
+        TEST_ERROR;
+    memset(rdata, 0, sizeof(rdata));
+    if (H5Dread(dset, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, rdata) < 0)
+        TEST_ERROR;
+    if (memcmp(wdata, rdata, sizeof(wdata)) != 0)
+        TEST_ERROR;
+    if ((dcpl_out = H5Dget_create_plist(dset)) < 0)
+        TEST_ERROR;
+    if (blob_check_getter(dcpl_out, 0, blob, BLOB_TEST_SIZE) < 0)
+        TEST_ERROR;
+    if (H5Pclose(dcpl_out) < 0)
+        TEST_ERROR;
+    dcpl_out = H5I_INVALID_HID;
+    if (H5Dclose(dset) < 0)
+        TEST_ERROR;
+    dset = H5I_INVALID_HID;
+
+    /* Deleting the copy must reclaim only its own (relocated) heap object;
+     * if the locator had been carried over verbatim, this would instead
+     * corrupt whatever unrelated heap object in dst_file happens to sit at
+     * the source file's address */
+    if (H5Ldelete(dst_file, "dset_copy", H5P_DEFAULT) < 0)
+        TEST_ERROR;
+
+    if (H5Fclose(dst_file) < 0)
+        TEST_ERROR;
+    dst_file = H5I_INVALID_HID;
+
+    if (H5Sclose(sid) < 0 || H5Pclose(dcpl) < 0)
+        TEST_ERROR;
+    sid = dcpl = H5I_INVALID_HID;
+    if (H5Zunregister(BLOB_DEFAULT_FILTER_ID) < 0)
+        TEST_ERROR;
+
+    free(blob);
+    PASSED();
+    return 0;
+
+error:
+    H5E_BEGIN_TRY
+    {
+        H5Dclose(dset);
+        H5Pclose(dcpl);
+        H5Pclose(dcpl_out);
+        H5Sclose(sid);
+        H5Fclose(src_file);
+        H5Fclose(dst_file);
+        H5Zunregister(BLOB_DEFAULT_FILTER_ID);
+    }
+    H5E_END_TRY
+    free(blob);
+    return -1;
+}
+
+/* H5Pencode()/H5Pdecode() can only round-trip a blob up to
+ * H5Z_BLOB_DECODE_MAX (64 MiB): a blob over that bound must be rejected at
+ * H5Pencode() time, not silently encoded into a buffer that can never be
+ * decoded. A blob comfortably under the bound must still round-trip. */
+static int
+test_blob_encode_decode_bound(void)
+{
+    static const H5Z_class3_t blob_cls = {
+        2,                      /* version         */
+        BLOB_DEFAULT_FILTER_ID, /* id              */
+        1,                      /* encoder_present */
+        1,                      /* decoder_present */
+        "blob_default_filter",  /* canonical_name  */
+        NULL,                   /* can_apply       */
+        NULL,                   /* set_local       */
+        blob_passthrough_func,  /* filter          */
+        NULL,                   /* set_config      */
+        NULL,                   /* get_config      */
+        NULL,                   /* write_blob: use default global-heap storage */
+        NULL,                   /* read_blob       */
+        NULL,                   /* close_blob      */
+        NULL,                   /* description     */
+    };
+    unsigned char *big_blob    = NULL;
+    hid_t          dcpl_big    = H5I_INVALID_HID;
+    hid_t          dcpl_small  = H5I_INVALID_HID, dcpl_dec = H5I_INVALID_HID;
+    void          *enc_buf     = NULL;
+    size_t         enc_size    = 0;
+    herr_t         encode_ret;
+
+    TESTING("H5Pencode/H5Pdecode: a blob over the decode bound is rejected at encode time");
+
+    if (H5Zregister(&blob_cls) < 0)
+        TEST_ERROR;
+
+    if (NULL == (big_blob = (unsigned char *)malloc(ENCODE_BOUND_OVER_LIMIT)))
+        TEST_ERROR;
+    blob_fill_pattern(big_blob, ENCODE_BOUND_OVER_LIMIT);
+
+    if ((dcpl_big = H5Pcreate(H5P_DATASET_CREATE)) < 0)
+        TEST_ERROR;
+    if (H5Pappend_filter_blob(dcpl_big, BLOB_DEFAULT_FILTER_ID, 0, big_blob, ENCODE_BOUND_OVER_LIMIT) < 0)
+        TEST_ERROR;
+
+    H5E_BEGIN_TRY
+    {
+        encode_ret = H5Pencode2(dcpl_big, NULL, &enc_size, H5P_DEFAULT);
+    }
+    H5E_END_TRY
+    if (encode_ret >= 0)
+        TEST_ERROR;
+
+    /* A blob well under the bound must still round-trip */
+    if ((dcpl_small = H5Pcreate(H5P_DATASET_CREATE)) < 0)
+        TEST_ERROR;
+    if (H5Pappend_filter_blob(dcpl_small, BLOB_DEFAULT_FILTER_ID, 0, big_blob, BLOB_TEST_SIZE) < 0)
+        TEST_ERROR;
+    if (H5Pencode2(dcpl_small, NULL, &enc_size, H5P_DEFAULT) < 0)
+        TEST_ERROR;
+    if (NULL == (enc_buf = malloc(enc_size)))
+        TEST_ERROR;
+    if (H5Pencode2(dcpl_small, enc_buf, &enc_size, H5P_DEFAULT) < 0)
+        TEST_ERROR;
+    if ((dcpl_dec = H5Pdecode(enc_buf)) < 0)
+        TEST_ERROR;
+    if (blob_check_getter(dcpl_dec, 0, big_blob, BLOB_TEST_SIZE) < 0)
+        TEST_ERROR;
+
+    if (H5Pclose(dcpl_big) < 0 || H5Pclose(dcpl_small) < 0 || H5Pclose(dcpl_dec) < 0)
+        TEST_ERROR;
+    dcpl_big = dcpl_small = dcpl_dec = H5I_INVALID_HID;
+    if (H5Zunregister(BLOB_DEFAULT_FILTER_ID) < 0)
+        TEST_ERROR;
+
+    free(big_blob);
+    free(enc_buf);
+    PASSED();
+    return 0;
+
+error:
+    H5E_BEGIN_TRY
+    {
+        H5Pclose(dcpl_big);
+        H5Pclose(dcpl_small);
+        H5Pclose(dcpl_dec);
+        H5Zunregister(BLOB_DEFAULT_FILTER_ID);
+    }
+    H5E_END_TRY
+    free(big_blob);
+    free(enc_buf);
     return -1;
 }
 
@@ -4906,7 +5153,8 @@ static const H5Z_class3_t canon_cls = {
     canon_filter_func, /* filter          */
     canon_set_config,  /* set_config      */
     canon_get_config,  /* get_config      */
-    NULL,              /* description     */
+    NULL,              /* write_blob (remaining fields -- read_blob, close_blob,
+                        * description -- default to NULL)                     */
 };
 
 /* Append CANON_FILTER_ID configured with PARAMS and return the DCPL */
@@ -5076,7 +5324,8 @@ static const H5Z_class3_t mixv3_cls = {
     mixv3_filter_func, /* filter          */
     mixv3_set_config,  /* set_config      */
     NULL,              /* get_config      */
-    NULL,              /* description     */
+    NULL,              /* write_blob (remaining fields -- read_blob, close_blob,
+                        * description -- default to NULL)                     */
 };
 
 static int
@@ -5931,6 +6180,8 @@ main(void)
     nerrors += test_blob_per_dataset_copy_then_tweak(fapl) < 0 ? 1 : 0;
     nerrors += test_blob_usecaseb_path_association(fapl) < 0 ? 1 : 0;
     nerrors += test_blob_oversized_default_storage(fapl) < 0 ? 1 : 0;
+    nerrors += test_blob_ocopy_relocation(fapl) < 0 ? 1 : 0;
+    nerrors += test_blob_encode_decode_bound() < 0 ? 1 : 0;
     nerrors += test_blob_libpressio_migration_pattern(fapl) < 0 ? 1 : 0;
 
     /* Decode a fixed, checked-in golden file (not encoded this run) */
