@@ -2200,7 +2200,16 @@ H5Z_blob_buf_new(void *data, size_t size, bool from_callback, H5Z_close_blob_fun
 
     FUNC_ENTER_NOAPI_NOINIT
 
-    assert(from_callback || close_blob == NULL);
+    /* Both directions of this invariant matter: close_blob without
+     * from_callback is merely confusing (H5Z_blob_release() would never
+     * invoke it), but from_callback without close_blob is dangerous --
+     * H5Z_blob_release() would fall back to H5MM_xfree() on memory a
+     * filter's own read_blob may have allocated with a different allocator,
+     * corrupting the heap. H5Z_register3() enforces that read_blob requires
+     * close_blob, so every caller here should already satisfy this, but the
+     * assert should catch the dangerous direction too, not only the safe
+     * one, in case a future call site bypasses that registration check. */
+    assert(from_callback == (close_blob != NULL));
 
     if (NULL == (buf = H5MM_malloc(sizeof(H5Z_blob_buf_t))))
         HGOTO_ERROR(H5E_PLINE, H5E_CANTALLOC, NULL, "memory allocation failed for blob buffer");
@@ -2311,18 +2320,34 @@ H5Z_blob_release(H5Z_filter_info_t *fi)
  *           none, by delegating to the default writer); per-rank divergent
  *           behavior is undefined.
  *
+ *           A mid-loop failure (the Nth filter's blob fails to write after
+ *           the first N-1 succeeded) rolls back the library-managed
+ *           (default global-heap storage) blobs this call itself just
+ *           persisted, so a partial failure does not orphan file space.
+ *           A custom write_blob's bytes cannot be generically undone here
+ *           -- the H5Z_class3_t API has no matching "undo" callback -- so,
+ *           like H5O__pline_delete(), those are left in place; the filter
+ *           that wrote them owns that on-disk layout.
+ *
  * Return:   Non-negative on success / Negative on failure
  *-------------------------------------------------------------------------
  */
 herr_t
 H5Z_blob_write(H5F_t *f, H5O_pline_t *pline)
 {
-    herr_t ret_value = SUCCEED;
+    herr_t  ret_value   = SUCCEED;
+    size_t  n_written   = 0;    /* filters this call has successfully written so far */
+    size_t *written_idx = NULL; /* their indices into pline->filter[], for rollback on failure */
 
     FUNC_ENTER_NOAPI(FAIL)
 
     assert(f);
     assert(pline);
+
+    if (pline->nused > 0)
+        if (NULL == (written_idx = (size_t *)H5MM_malloc(pline->nused * sizeof(size_t))))
+            HGOTO_ERROR(H5E_RESOURCE, H5E_NOSPACE, FAIL,
+                        "memory allocation failed for blob-write rollback tracking");
 
     for (size_t u = 0; u < pline->nused; u++) {
         H5Z_filter_info_t *fi    = &pline->filter[u];
@@ -2399,9 +2424,25 @@ H5Z_blob_write(H5F_t *f, H5O_pline_t *pline)
 
         fi->aux_loc              = loc;
         fi->blob_default_storage = default_storage;
+        written_idx[n_written++] = u;
     }
 
 done:
+    if (ret_value < 0 && n_written > 0) {
+        for (size_t k = n_written; k > 0; k--) {
+            H5Z_filter_info_t *fi = &pline->filter[written_idx[k - 1]];
+
+            if (fi->blob_default_storage) {
+                H5HG_t hobj;
+
+                hobj.addr = fi->aux_loc.addr;
+                hobj.idx  = fi->aux_loc.idx;
+                (void)H5HG_remove(f, &hobj); /* best-effort: don't clobber the real error */
+            }
+            fi->aux_loc.addr = HADDR_UNDEF;
+        }
+    }
+    H5MM_xfree(written_idx);
     FUNC_LEAVE_NOAPI(ret_value)
 } /* end H5Z_blob_write() */
 

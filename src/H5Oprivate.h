@@ -767,9 +767,22 @@ typedef struct H5O_ginfo_t {
 #define H5O_PLINE_EXT_CONFIG 0x0001 /* verbatim key=value config string     */
 #define H5O_PLINE_EXT_BLOB   0x0002 /* global-heap locator for filter blob  */
 
-/* Bit 0 of a block's flags byte: the block is required in order to
- * interpret the entry correctly. */
+/* Flags-byte bit allocation: bit 0 is generic, defined once and meaningful
+ * for every block type; bits 1-7 are block-type-specific, their meaning
+ * (if any) set by the block's own `type` field, and reserved (must be 0 at
+ * encode, rejected if set at decode) for a type that does not define them.
+ * A decoder must not silently accept a bit it does not recognize for a
+ * block type it does recognize -- that would let a file depend on
+ * behavior (e.g. a future bit meaning "reinterpret this block differently")
+ * that this build cannot honor, without any indication anything was
+ * missed. Unrecognized *block types* are a separate mechanism, governed
+ * solely by bit 0 (see H5O_PLINE_VERSION_3's comment above). */
+
+/* Bit 0, all block types: the block is required in order to interpret the
+ * entry correctly. */
 #define H5O_PLINE_EXT_FLAG_CRITICAL 0x01
+/* Every flags bit this build defines for a H5O_PLINE_EXT_CONFIG block. */
+#define H5O_PLINE_EXT_CONFIG_FLAGS_KNOWN H5O_PLINE_EXT_FLAG_CRITICAL
 
 /* Bit 1 of a H5O_PLINE_EXT_BLOB block's flags byte: the locator is a
  * library-managed global-heap address, safe for H5O__pline_delete() to
@@ -782,6 +795,8 @@ typedef struct H5O_ginfo_t {
  * space or calling H5HG_remove() on a value that was never a global-heap
  * locator.  Meaningless for H5O_PLINE_EXT_CONFIG blocks. */
 #define H5O_PLINE_EXT_BLOB_FLAG_DEFAULT_STORAGE 0x02
+/* Every flags bit this build defines for a H5O_PLINE_EXT_BLOB block. */
+#define H5O_PLINE_EXT_BLOB_FLAGS_KNOWN (H5O_PLINE_EXT_FLAG_CRITICAL | H5O_PLINE_EXT_BLOB_FLAG_DEFAULT_STORAGE)
 
 /* Fixed framing of one block: type(2) + flags(1) + reserved(1) + length(4) */
 #define H5O_PLINE_EXT_HDR_SIZE 8

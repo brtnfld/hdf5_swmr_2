@@ -465,8 +465,11 @@ typedef struct H5Z_class_info_t {
  * \details H5Zget_filter_class_info() complements #H5Zget_filter_info, which
  *          returns only the encode/decode config-flag bits. This call also
  *          exposes the filter's canonical \c name, its human-readable
- *          \c description, and whether the plugin implements the v3
- *          \c set_config / \c get_config callbacks.
+ *          \c description, whether the plugin implements the v3
+ *          \c set_config / \c get_config callbacks, and whether it supplies
+ *          its own \c write_blob / \c read_blob pair (\c has_blob_callbacks)
+ *          rather than relying on the library's default global-heap blob
+ *          storage.
  *
  *          The function attempts to load the filter plugin if it is not yet
  *          registered (same dynamic-load policy as #H5Zfilter_avail).  If the

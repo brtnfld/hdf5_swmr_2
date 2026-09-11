@@ -4,9 +4,9 @@
 **Repo:** brtnfld/hdf5
 **Branch:** `blob` (base: `origin/blob`)
 **Diff:** 24 files changed, +661/-529 (tier: medium)
-**Overall Risk: Critical → Resolved** (see disposition notes below; all Critical and High
-findings are fixed and verified as of 2026-09-11, except one High that is an accepted,
-already-decided release-coordination item)
+**Overall Risk: Critical → Resolved** (see the Disposition Summary below; all Critical, all
+High but one accepted release-coordination item, 7/9 Medium, and 2/4 Low findings are fixed and
+verified as of 2026-09-11)
 
 This branch just synced with an upstream feature branch (`feature/filter_config_string`),
 pulling in a struct field reorder (`H5Z_class3_t.description` moved to the end) plus several
@@ -170,10 +170,20 @@ test files (struct-literal migration), `tools/lib/h5tools_dump.c` (CodeQL fix), 
    TOML parser), permanently hiding all memory-safety warnings, not just the one
    (`-Wcast-align`) the commit message names.
 
+   **✅ Fixed (2026-09-11).** Replaced the blanket `-w` (GCC/Clang) / `/W0` (MSVC) with
+   `-Wno-error` / `/WX-`: this still keeps `HDF5_ENABLE_WARNINGS_AS_ERRORS` from failing the
+   build over this vendored file (the original goal), but the warnings themselves now surface
+   in build logs instead of being hidden outright. Confirmed real warnings (sign/float
+   conversions in `tomlc17.c`) now appear in the build log where `-w` previously suppressed
+   them; the build still succeeds and `tfilter2` still passes.
+
 3. **[adversarial-general, 88]** The `loc.idx > UINT32_MAX` truncation guard present in the
    working tree at review time was flagged as absent from any commit — the reviewed commit
    history silently truncates a 64-bit custom locator index on encode. Worth committing (or
    dropping if abandoned) before this branch goes further.
+
+   **✅ Fixed (2026-09-11).** This guard was already in the working tree and is now committed
+   (`5ba16269614`), alongside the other High #1/#7 fixes in `src/H5Z.c`.
 
 4. **[architecture-reviewer 82; type-design-analyzer, qualitative]** The "first 8 fields must
    match `H5Z_class2_t`, append-only" invariant `H5Z_class3_t` now depends on (including for
@@ -191,16 +201,54 @@ test files (struct-literal migration), `tools/lib/h5tools_dump.c` (CodeQL fix), 
    bit as the sole gate on `H5HG_remove()` at delete time with no validation that the locator
    address is plausible for this file.
 
+   **✅ Fixed (2026-09-11).** `H5O__pline_delete()` now rejects a `blob_default_storage` locator
+   whose address is beyond the file's end-of-allocated-space (`H5F_get_eoa()`, `H5FD_MEM_GHEAP`)
+   before calling `H5HG_remove()` — the same granularity other storage layouts already validate
+   an on-disk address against (see `H5D__contig_is_space_alloc()` in `H5Dcontig.c`). This closes
+   the "wildly out of range" case; it does not (and, without per-object provenance tagging the
+   on-disk format doesn't have, cannot) catch an address that happens to coincidentally land on
+   a real, different global-heap collection. No dedicated corruption-injection test was added
+   for this one — existing `tfilter2` blob-delete tests confirm no regression to normal
+   operation.
+
 6. **[architecture-reviewer, 78]** Extension-block flags byte mixes a generic bit and a
    block-type-specific bit with no documented allocation scheme, and unknown bits are silently
    accepted at decode.
 
+   **✅ Fixed (2026-09-11).** `H5Oprivate.h` now documents the bit-allocation scheme (bit 0
+   generic, bits 1-7 block-type-specific) explicitly, with a `*_FLAGS_KNOWN` mask per block
+   type. `H5O__pline_decode()` now rejects a `H5O_PLINE_EXT_CONFIG` or `H5O_PLINE_EXT_BLOB`
+   block whose flags byte sets any bit outside that block type's known mask, instead of
+   silently ignoring it. Verified the checked-in `test_filters_v3.h5` golden file (whose flags
+   byte predates this change) still decodes cleanly — its flags happen to only use known bits.
+
 7. **[adversarial-general, 85]** `H5O__pline_debug()` has no visibility into blob locators or
    the storage-ownership bit — no in-tree tool can inspect this new on-disk state.
+
+   **✅ Fixed (2026-09-11).** `H5O__pline_debug()` now prints each filter's config string (if
+   any), blob locator (addr/idx) and storage-ownership (library vs. custom), and in-memory
+   blob residency/size, when present.
 
 8. **[adversarial-general, 80]** `H5Z_blob_write()`'s per-filter loop isn't transactional: a
    mid-loop failure leaves already-persisted blobs from earlier iterations in that same call
    orphaned, with no rollback.
+
+   **✅ Fixed (2026-09-11).** `H5Z_blob_write()` now tracks which filters it has itself
+   persisted with library-managed (default global-heap) storage during the current call, and on
+   a later filter's failure, rolls those back via `H5HG_remove()` (a custom `write_blob`'s bytes
+   are left in place, matching `H5O__pline_delete()`'s existing "the filter owns that layout"
+   rule — there's no "undo" callback in the `H5Z_class3_t` API to invoke instead). Added a new
+   official regression test, `test_blob_write_rollback_on_partial_failure()`, which registers a
+   filter whose `write_blob` always fails, attaches it after a normal blob-bearing filter in the
+   same pipeline, and confirms the file's `H5Fget_eoa()` returns to its pre-attempt value after
+   the expected `H5Dcreate2()` failure (i.e., the first filter's already-inserted global-heap
+   object was reclaimed, not left inflating the file forever). Verified with a negative
+   control: with the rollback temporarily disabled, the same test fails, showing EOA growing by
+   the orphaned blob's size and never returning — confirming a real, otherwise-undetected leak.
+   (An earlier attempt at this test using `H5Fget_freespace()` before/after did not detect the
+   leak: the orphaned collection sits at the end of the file rather than in the middle, so
+   removing it shrinks EOA directly instead of registering space in a free-space manager,
+   making `H5Fget_eoa()` the correct signal, not `H5Fget_freespace()`.)
 
 ### Low (4, confidence ≥75)
 
@@ -247,7 +295,7 @@ test files (struct-literal migration), `tools/lib/h5tools_dump.c` (CodeQL fix), 
    restriction, encode/decode asymmetry) — lower urgency, but all are pre-release API/docs
    that are cheapest to fix now.
 
-## Disposition Summary (2026-09-11)
+## Disposition Summary (2026-09-11, updated)
 
 - **Critical (1/1 fixed):** `H5O__pline_copy_file()` no-op — fixed, tested, negative-controlled.
 - **High (6/7 fixed, 1 accepted as-is):**
@@ -255,21 +303,40 @@ test files (struct-literal migration), `tools/lib/h5tools_dump.c` (CodeQL fix), 
   - #2 tomlc17 sign-bit bug — fixed.
   - #3 `H5Z_CLASS3_T_VERS` layout collision with `origin/6153` — deferred; same
     already-decided release-coordination item as the prior review's Critical #4.
-  - #4 missing regression tests — partially fixed (added official tests for the Critical
-    `H5Ocopy` fix and the #7 encode/decode bound; blob-callback pairing and DCPL-only rejection
-    are still smoke-test-only).
+  - #4 missing regression tests — partially fixed (official tests added for the Critical
+    `H5Ocopy` fix, the #7 encode/decode bound, and Medium #8's rollback; blob-callback pairing
+    and DCPL-only rejection are still smoke-test-only).
   - #5 `H5Zdevelop.h` pairing docs — fixed.
   - #6 `H5Pappend_filter_blob` DCPL-only doc + check reorder — fixed.
   - #7 encode/decode size asymmetry — fixed, tested, negative-controlled.
-- **Medium (2/9 fixed):** #1 (mislabeled test comments) and #4 (missing layout-invariant
-  compile-time assert + stale comment) fixed. #2 (blanket `-w` on tomlc17.c), #3 (`loc.idx`
-  truncation guard — already present in the working tree, not yet committed separately), #5-8
-  remain open.
-- **Low (0/4 addressed):** all four remain open; none block a release on their own.
-- **Regression testing:** full library rebuild plus `tfilter2`, `t_filters_parallel`,
-  `H5PLUGIN-filter_plugin`, `H5TESTXPR-objcopy`, `H5TEST-ohdr`, `H5TEST-dsets`,
-  `H5COPY-compressed`, and `H5COPY_UD-h5copy_plugin_test` all pass after every fix in this
-  batch.
+- **Medium (7/9 fixed):**
+  - #1 mislabeled test comments — fixed.
+  - #2 blanket `-w` on tomlc17.c — fixed (`-Wno-error`/`WX-` instead; warnings now visible,
+    build no longer fails over them).
+  - #3 `loc.idx` truncation guard — confirmed committed.
+  - #4 missing layout-invariant compile-time assert + stale comment — fixed.
+  - #5 no address-plausibility check before `H5HG_remove()` at delete time — fixed (EOA bound);
+    no dedicated corruption-injection test.
+  - #6 undocumented flags-byte bit-allocation scheme — fixed (documented + unknown bits now
+    rejected at decode).
+  - #7 `H5O__pline_debug()` blob visibility — fixed.
+  - #8 `H5Z_blob_write()` not transactional — fixed, tested (`H5Fget_eoa()`-based), negative-
+    controlled.
+  - Not done: none remaining beyond the above.
+- **Low (2/4 addressed):**
+  - `H5Zget_filter_class_info()` docs not mentioning `has_blob_callbacks` — fixed.
+  - `H5Z_blob_buf_new()`'s assert checking only the safe direction — fixed (now symmetric:
+    `from_callback == (close_blob != NULL)`).
+  - CHANGELOG overstating `H5Ocopy` behavior — re-verified: the current CHANGELOG text ("H5Ocopy
+    ... re-persists the blob into the destination file and assigns it a fresh locator there")
+    is now accurate, since the Critical fix makes that true. No longer an open finding.
+  - `H5Pappend_filter_blob()`'s doc citing a stale "locator broadcast cost" — re-verified: not
+    present in the current doc text (already corrected in an earlier fix phase). No longer an
+    open finding.
+- **Regression testing:** full library rebuild plus the entire `H5TEST` suite (102 tests),
+  `t_filters_parallel`, `H5PLUGIN-filter_plugin`, `H5TESTXPR-objcopy`/`objcopy_ref`,
+  `H5COPY-compressed`, `H5COPY_UD-h5copy_plugin_test`, and `H5COPY_UD_ERR-h5copy_plugin_fail`
+  (118 tests total in the final sweep) all pass after every fix in this batch.
 
 ## Review Metadata
 

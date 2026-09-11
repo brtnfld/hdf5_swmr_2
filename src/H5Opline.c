@@ -291,6 +291,11 @@ H5O__pline_decode(H5F_t *f, H5O_t H5_ATTR_UNUSED *open_oh, unsigned H5_ATTR_UNUS
 
                 switch (ext_type) {
                     case H5O_PLINE_EXT_CONFIG:
+                        if (ext_flags & ~H5O_PLINE_EXT_CONFIG_FLAGS_KNOWN)
+                            HGOTO_ERROR(H5E_PLINE, H5E_CANTLOAD, NULL,
+                                        "filter config extension block sets an unrecognized flags bit "
+                                        "(0x%02x)",
+                                        ext_flags & ~H5O_PLINE_EXT_CONFIG_FLAGS_KNOWN);
                         if (ext_length > H5Z_CONFIG_STRING_MAX)
                             HGOTO_ERROR(H5E_PLINE, H5E_CANTLOAD, NULL,
                                         "filter config string exceeds maximum length");
@@ -308,6 +313,11 @@ H5O__pline_decode(H5F_t *f, H5O_t H5_ATTR_UNUSED *open_oh, unsigned H5_ATTR_UNUS
                         const uint8_t *bp = p; /* leave p to the common advance below */
                         uint32_t       idx;
 
+                        if (ext_flags & ~H5O_PLINE_EXT_BLOB_FLAGS_KNOWN)
+                            HGOTO_ERROR(H5E_PLINE, H5E_CANTLOAD, NULL,
+                                        "filter blob extension block sets an unrecognized flags bit "
+                                        "(0x%02x)",
+                                        ext_flags & ~H5O_PLINE_EXT_BLOB_FLAGS_KNOWN);
                         if (ext_length != (uint32_t)(H5F_SIZEOF_ADDR(f) + 4))
                             HGOTO_ERROR(H5E_PLINE, H5E_CANTLOAD, NULL,
                                         "filter blob locator has unexpected length");
@@ -849,6 +859,7 @@ static herr_t
 H5O__pline_delete(H5F_t *f, H5O_t H5_ATTR_UNUSED *open_oh, void *_mesg)
 {
     H5O_pline_t *pline     = (H5O_pline_t *)_mesg; /* Pipeline message */
+    haddr_t      eoa       = HADDR_UNDEF; /* End of allocated file space, lazily fetched below */
     herr_t       ret_value = SUCCEED;
 
     FUNC_ENTER_PACKAGE
@@ -866,6 +877,22 @@ H5O__pline_delete(H5F_t *f, H5O_t H5_ATTR_UNUSED *open_oh, void *_mesg)
          * cannot reclaim it. */
         if (!pline->filter[i].blob_default_storage)
             continue;
+
+        /* A corrupted DEFAULT_STORAGE flag paired with an arbitrary on-disk
+         * address would otherwise reach H5HG_remove() unchecked -- the
+         * global heap signature check it performs catches an address that
+         * lands outside any heap collection, but not one that is simply
+         * implausible for this file (e.g. beyond every byte the file has
+         * ever allocated). Reject that case here, at the same granularity
+         * other storage layouts already validate an on-disk address
+         * against (see H5D__contig_is_space_alloc()'s H5F_get_eoa() check
+         * in H5Dcontig.c), rather than letting it reach H5HG_remove(). */
+        if (!H5_addr_defined(eoa))
+            if (HADDR_UNDEF == (eoa = H5F_get_eoa(f, H5FD_MEM_GHEAP)))
+                HGOTO_ERROR(H5E_PLINE, H5E_CANTGET, FAIL, "unable to determine file size");
+        if (H5_addr_gt(pline->filter[i].aux_loc.addr, eoa))
+            HGOTO_ERROR(H5E_PLINE, H5E_BADVALUE, FAIL,
+                        "filter blob locator address is beyond the file's allocated space");
 
         hobj.addr = pline->filter[i].aux_loc.addr;
         hobj.idx  = pline->filter[i].aux_loc.idx;
@@ -972,6 +999,18 @@ H5O__pline_debug(H5F_t H5_ATTR_UNUSED *f, const void *mesg, FILE *stream, int in
                 "Flags:", pline->filter[i].flags);
         fprintf(stream, "%*s%-*s %zu\n", indent + 3, "", MAX(0, fwidth - 3),
                 "Num CD values:", pline->filter[i].cd_nelmts);
+        if (pline->filter[i].config)
+            fprintf(stream, "%*s%-*s \"%s\"\n", indent + 3, "", MAX(0, fwidth - 3),
+                    "Config string:", pline->filter[i].config);
+        if (H5_addr_defined(pline->filter[i].aux_loc.addr)) {
+            fprintf(stream, "%*s%-*s %" PRIuHADDR "/%zu\n", indent + 3, "", MAX(0, fwidth - 3),
+                    "Blob locator (addr/idx):", pline->filter[i].aux_loc.addr, pline->filter[i].aux_loc.idx);
+            fprintf(stream, "%*s%-*s %s\n", indent + 3, "", MAX(0, fwidth - 3),
+                    "Blob storage:", pline->filter[i].blob_default_storage ? "library (global heap)" : "custom (filter-owned)");
+        }
+        if (pline->filter[i].aux)
+            fprintf(stream, "%*s%-*s %zu bytes\n", indent + 3, "", MAX(0, fwidth - 3),
+                    "Blob resident in memory:", pline->filter[i].aux->size);
 
         /* Filter parameters */
         for (size_t j = 0; j < pline->filter[i].cd_nelmts; j++) {

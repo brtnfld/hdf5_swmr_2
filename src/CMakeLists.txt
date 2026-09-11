@@ -1030,15 +1030,19 @@ endif ()
 # Vendored third-party code should not be held to HDF5_ENABLE_WARNINGS_AS_ERRORS'
 # own strict internal warning set: it legitimately trips several of them
 # (e.g. -Werror=cast-align in its pointer-arithmetic tokenizer), which would
-# otherwise fail every HDF5 CI job built with that option on. Suppress
-# warnings for this one file only, the same way HDF5_DISABLE_COMPILER_WARNINGS
-# does for the whole build (see config/flags/HDFCompilerFlags.cmake).
+# otherwise fail every HDF5 CI job built with that option on. Demote any
+# warning back to non-fatal for this one file only -- deliberately narrower
+# than what HDF5_DISABLE_COMPILER_WARNINGS does for the whole build (see
+# config/flags/HDFCompilerFlags.cmake): this parses untrusted, file-supplied
+# TOML text, so its warnings (a plain -w would hide memory-safety classes
+# along with the cast-align one) should still surface in build logs for
+# review, just not break the build.
 if (MSVC)
-  set_property (SOURCE ${HDF5_SRC_DIR}/tomlc17/tomlc17.c APPEND PROPERTY COMPILE_OPTIONS "/W0")
+  set_property (SOURCE ${HDF5_SRC_DIR}/tomlc17/tomlc17.c APPEND PROPERTY COMPILE_OPTIONS "/WX-")
 else ()
-  check_c_compiler_flag ("-w" HDF5_C_HAS_W)
-  if (HDF5_C_HAS_W)
-    set_property (SOURCE ${HDF5_SRC_DIR}/tomlc17/tomlc17.c APPEND PROPERTY COMPILE_OPTIONS "-w")
+  check_c_compiler_flag ("-Wno-error" HDF5_C_HAS_WNO_ERROR)
+  if (HDF5_C_HAS_WNO_ERROR)
+    set_property (SOURCE ${HDF5_SRC_DIR}/tomlc17/tomlc17.c APPEND PROPERTY COMPILE_OPTIONS "-Wno-error")
   endif ()
 endif ()
 

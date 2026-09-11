@@ -34,6 +34,7 @@ static const char *FILENAME[] = {"tfilter2",
                                  "tfilter2_blob_oversized",
                                  "tfilter2_blob_ocopy_src",
                                  "tfilter2_blob_ocopy_dst",
+                                 "tfilter2_blob_rollback",
                                  NULL};
 
 /* -----------------------------------------------------------------------
@@ -4434,6 +4435,191 @@ error:
     return -1;
 }
 
+#define BLOB_FAILWRITE_FILTER_ID 551
+
+/* Always fails, to exercise H5Z_blob_write()'s rollback path when a later
+ * filter in the pipeline fails after an earlier one already succeeded. */
+static herr_t
+blob_failing_write(hid_t H5_ATTR_UNUSED file_id, const void H5_ATTR_UNUSED *buf, size_t H5_ATTR_UNUSED size,
+                    H5Z_blob_loc_t H5_ATTR_UNUSED *loc_out)
+{
+    return FAIL;
+}
+
+/* Never reached in this test (write_blob always fails first); required to
+ * pair with write_blob for H5Zregister() to accept this class. */
+static herr_t
+blob_failing_read(hid_t H5_ATTR_UNUSED file_id, H5Z_blob_loc_t H5_ATTR_UNUSED loc,
+                   void H5_ATTR_UNUSED **buf_out, size_t H5_ATTR_UNUSED *size_out)
+{
+    return FAIL;
+}
+
+static herr_t
+blob_failing_close(void H5_ATTR_UNUSED *buf, size_t H5_ATTR_UNUSED size)
+{
+    return SUCCEED;
+}
+
+/* A pipeline with two blob-bearing filters, where the second filter's
+ * write_blob always fails, must not leave the first filter's already-
+ * written (library-managed, global-heap) blob orphaned, and must not leave
+ * the dataset half-created. */
+static int
+test_blob_write_rollback_on_partial_failure(hid_t fapl)
+{
+    static const H5Z_class3_t good_cls = {
+        2,                      /* version         */
+        BLOB_DEFAULT_FILTER_ID, /* id              */
+        1,                      /* encoder_present */
+        1,                      /* decoder_present */
+        "blob_default_filter",  /* canonical_name  */
+        NULL,                   /* can_apply       */
+        NULL,                   /* set_local       */
+        blob_passthrough_func,  /* filter          */
+        NULL,                   /* set_config      */
+        NULL,                   /* get_config      */
+        NULL,                   /* write_blob: use default global-heap storage */
+        NULL,                   /* read_blob       */
+        NULL,                   /* close_blob      */
+        NULL,                   /* description     */
+    };
+    static const H5Z_class3_t bad_cls = {
+        2,                        /* version         */
+        BLOB_FAILWRITE_FILTER_ID, /* id              */
+        1,                        /* encoder_present */
+        1,                        /* decoder_present */
+        "blob_failwrite_filter",  /* canonical_name  */
+        NULL,                     /* can_apply       */
+        NULL,                     /* set_local       */
+        blob_passthrough_func,    /* filter          */
+        NULL,                     /* set_config      */
+        NULL,                     /* get_config      */
+        blob_failing_write,       /* write_blob: always fails */
+        blob_failing_read,        /* read_blob: never reached, required to pair */
+        blob_failing_close,       /* close_blob: never reached, required alongside read_blob */
+        NULL,                     /* description     */
+    };
+    char           filename[1024];
+    unsigned char  blob_a[64], blob_b[64];
+    hid_t          file = H5I_INVALID_HID, sid = H5I_INVALID_HID, dcpl = H5I_INVALID_HID;
+    hid_t          dset2 = H5I_INVALID_HID;
+    hsize_t        dims[2] = {8, 8}, chunk[2] = {4, 4};
+    herr_t         create_ret;
+    haddr_t        eoa_before, eoa_after;
+
+    TESTING("H5Z_blob_write: a mid-pipeline failure rolls back earlier blobs, not the file");
+
+    if (H5Zregister(&good_cls) < 0)
+        TEST_ERROR;
+    if (H5Zregister(&bad_cls) < 0)
+        TEST_ERROR;
+    blob_fill_pattern(blob_a, sizeof(blob_a));
+    blob_fill_pattern(blob_b, sizeof(blob_b));
+
+    if ((dcpl = H5Pcreate(H5P_DATASET_CREATE)) < 0)
+        TEST_ERROR;
+    if (H5Pset_chunk(dcpl, 2, chunk) < 0)
+        TEST_ERROR;
+    /* Filter A (default storage, succeeds) then filter B (custom write_blob,
+     * always fails) */
+    if (H5Pappend_filter_blob(dcpl, BLOB_DEFAULT_FILTER_ID, 0, blob_a, sizeof(blob_a)) < 0)
+        TEST_ERROR;
+    if (H5Pappend_filter_blob(dcpl, BLOB_FAILWRITE_FILTER_ID, 0, blob_b, sizeof(blob_b)) < 0)
+        TEST_ERROR;
+
+    h5_fixname(FILENAME[12], fapl, filename, sizeof(filename));
+    if ((file = H5Fcreate(filename, H5F_ACC_TRUNC, H5P_DEFAULT, fapl)) < 0)
+        TEST_ERROR;
+    if ((sid = H5Screate_simple(2, dims, NULL)) < 0)
+        TEST_ERROR;
+
+    if (H5Fflush(file, H5F_SCOPE_LOCAL) < 0)
+        TEST_ERROR;
+    if (H5Fget_eoa(file, &eoa_before) < 0)
+        TEST_ERROR;
+
+    H5E_BEGIN_TRY
+    {
+        create_ret = H5Dcreate2(file, "dset", H5T_NATIVE_INT, sid, H5P_DEFAULT, dcpl, H5P_DEFAULT);
+    }
+    H5E_END_TRY
+    if (create_ret >= 0) {
+        H5Dclose(create_ret);
+        TEST_ERROR; /* must fail: filter B's write_blob always fails */
+    }
+
+    /* The dataset must not have been left half-created */
+    if (H5Lexists(file, "dset", H5P_DEFAULT) > 0)
+        TEST_ERROR;
+
+    /* The blob-write rollback itself: filter A's already-inserted
+     * global-heap object must have been freed along with the rest of the
+     * failed create, not left allocated-but-unreachable. Without the
+     * rollback, this leaks exactly one global-heap object's worth of space
+     * every time a later filter in the pipeline fails after an earlier one
+     * already succeeded -- indefinitely, since nothing ever points to it
+     * again to free it later. */
+    if (H5Fflush(file, H5F_SCOPE_LOCAL) < 0)
+        TEST_ERROR;
+    if (H5Fget_eoa(file, &eoa_after) < 0)
+        TEST_ERROR;
+    if (eoa_after != eoa_before) {
+        fprintf(stderr, "\n   EOA before failed create: %" PRIuHADDR "\n   EOA after:  %" PRIuHADDR "\n",
+                eoa_before, eoa_after);
+        TEST_ERROR;
+    }
+
+    /* The file itself must still be healthy: further I/O must work
+     * normally, demonstrating the failed create (and the blob rollback
+     * within it) didn't corrupt file-level state */
+    if ((dset2 = H5Dcreate2(file, "dset_after_failure", H5T_NATIVE_INT, sid, H5P_DEFAULT, H5P_DEFAULT,
+                            H5P_DEFAULT)) < 0)
+        TEST_ERROR;
+    if (H5Dclose(dset2) < 0)
+        TEST_ERROR;
+    dset2 = H5I_INVALID_HID;
+
+    if (H5Sclose(sid) < 0 || H5Pclose(dcpl) < 0)
+        TEST_ERROR;
+    sid = dcpl = H5I_INVALID_HID;
+    if (H5Fclose(file) < 0)
+        TEST_ERROR;
+    file = H5I_INVALID_HID;
+
+    /* Reopen and confirm the file is fully consistent end-to-end */
+    if ((file = H5Fopen(filename, H5F_ACC_RDONLY, fapl)) < 0)
+        TEST_ERROR;
+    if (H5Lexists(file, "dset", H5P_DEFAULT) > 0)
+        TEST_ERROR;
+    if (H5Lexists(file, "dset_after_failure", H5P_DEFAULT) <= 0)
+        TEST_ERROR;
+    if (H5Fclose(file) < 0)
+        TEST_ERROR;
+    file = H5I_INVALID_HID;
+
+    if (H5Zunregister(BLOB_DEFAULT_FILTER_ID) < 0)
+        TEST_ERROR;
+    if (H5Zunregister(BLOB_FAILWRITE_FILTER_ID) < 0)
+        TEST_ERROR;
+
+    PASSED();
+    return 0;
+
+error:
+    H5E_BEGIN_TRY
+    {
+        H5Dclose(dset2);
+        H5Pclose(dcpl);
+        H5Sclose(sid);
+        H5Fclose(file);
+        H5Zunregister(BLOB_DEFAULT_FILTER_ID);
+        H5Zunregister(BLOB_FAILWRITE_FILTER_ID);
+    }
+    H5E_END_TRY
+    return -1;
+}
+
 /* -----------------------------------------------------------------------
  * Reference example: migrating a real-world filter's oversized-config
  * pattern to H5Pappend_filter_blob.
@@ -6182,6 +6368,7 @@ main(void)
     nerrors += test_blob_oversized_default_storage(fapl) < 0 ? 1 : 0;
     nerrors += test_blob_ocopy_relocation(fapl) < 0 ? 1 : 0;
     nerrors += test_blob_encode_decode_bound() < 0 ? 1 : 0;
+    nerrors += test_blob_write_rollback_on_partial_failure(fapl) < 0 ? 1 : 0;
     nerrors += test_blob_libpressio_migration_pattern(fapl) < 0 ? 1 : 0;
 
     /* Decode a fixed, checked-in golden file (not encoded this run) */
