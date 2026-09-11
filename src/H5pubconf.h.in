@@ -95,6 +95,10 @@
 /* Define if the __attribute__(()) extension is present */
 #cmakedefine H5_HAVE_ATTRIBUTE @H5_HAVE_ATTRIBUTE@
 
+/* Define if the VFD SWMR auxiliary-process (NFS updater) code path should
+   be compiled into utils/vfd_swmr/aux_process */
+#cmakedefine H5_HAVE_AUX_PROCESS @H5_HAVE_AUX_PROCESS@
+
 /* Define if C99 complex number types are present */
 #cmakedefine H5_HAVE_C99_COMPLEX_NUMBERS @H5_HAVE_C99_COMPLEX_NUMBERS@
 

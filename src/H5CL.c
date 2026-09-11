@@ -638,7 +638,7 @@ H5CL__init_lex_vars(const char *input_str_ptr, H5CL_lex_vars_t *lex_vars_ptr)
     size_t input_str_len;
     herr_t ret_value = SUCCEED; /* Return value */
 
-    FUNC_ENTER_NOAPI(FAIL)
+    FUNC_ENTER_PACKAGE
 
     assert(input_str_ptr);
     assert(lex_vars_ptr);
@@ -724,7 +724,7 @@ H5CL__take_down_lex_vars(H5CL_lex_vars_t *lex_vars_ptr)
 {
     herr_t ret_value = SUCCEED; /* Return value */
 
-    FUNC_ENTER_NOAPI(FAIL)
+    FUNC_ENTER_PACKAGE
 
     assert(lex_vars_ptr);
     assert(H5CL_LEX_VARS_STRUCT_TAG == lex_vars_ptr->struct_tag);
@@ -790,7 +790,7 @@ H5CL__construct_err_ctx(H5CL_lex_vars_t *lex_vars_ptr)
     int   i          = 0;
     int   prefix_len = 3;
 
-    FUNC_ENTER_NOAPI_NOINIT_NOERR
+    FUNC_ENTER_PACKAGE_NOERR
 
     assert(lex_vars_ptr);
     assert(H5CL_LEX_VARS_STRUCT_TAG == lex_vars_ptr->struct_tag);
@@ -885,7 +885,7 @@ H5CL__lex_get_non_blank(H5CL_lex_vars_t *lex_vars_ptr)
     bool   in_comment;
     herr_t ret_value = SUCCEED; /* Return value */
 
-    FUNC_ENTER_NOAPI(FAIL)
+    FUNC_ENTER_PACKAGE
 
     assert(lex_vars_ptr);
     assert(H5CL_LEX_VARS_STRUCT_TAG == lex_vars_ptr->struct_tag);
@@ -1045,7 +1045,7 @@ H5CL__lex_peek_next_char(char *next_char_ptr, H5CL_lex_vars_t *lex_vars_ptr)
     char   next_char;
     herr_t ret_value = SUCCEED; /* Return value */
 
-    FUNC_ENTER_NOAPI(FAIL)
+    FUNC_ENTER_PACKAGE
 
     assert(next_char_ptr);
     assert(lex_vars_ptr);
@@ -1122,7 +1122,7 @@ H5CL__lex_read_token(bool value_expected, bool eoi_expected, H5CL_token_t **toke
     char   next_char;
     herr_t ret_value = SUCCEED; /* Return value */
 
-    FUNC_ENTER_NOAPI(FAIL)
+    FUNC_ENTER_PACKAGE
 
     assert(token_ptr_ptr);
     assert(lex_vars_ptr);
@@ -1471,14 +1471,28 @@ H5CL__lex_read_token(bool value_expected, bool eoi_expected, H5CL_token_t **toke
             lex_vars_ptr->token.code  = H5CL_FLOAT_TOK;
             errno                     = 0;
             lex_vars_ptr->token.f_val = strtod(lex_vars_ptr->token.str_ptr, NULL);
-            assert(0 == errno);
+            /* An out-of-range numeric literal in the input string is
+             * ordinary malformed input, not a library-internal invariant
+             * violation -- report it as a parse error rather than
+             * asserting, which compiles out under NDEBUG and would
+             * otherwise let an overflowed value silently clamp to
+             * +/-HUGE_VAL.
+             */
+            if (0 != errno)
+                HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
+                            "Floating point token '%s' is out of range", lex_vars_ptr->token.str_ptr);
         }
         else {
 
             lex_vars_ptr->token.code    = H5CL_INT_TOK;
             errno                       = 0;
             lex_vars_ptr->token.int_val = strtoll(lex_vars_ptr->token.str_ptr, NULL, 10);
-            assert(0 == errno);
+            /* Same reasoning as the float case above: an overflowed integer
+             * literal must not silently clamp to LLONG_MIN/LLONG_MAX.
+             */
+            if (0 != errno)
+                HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Integer token '%s' is out of range",
+                            lex_vars_ptr->token.str_ptr);
         }
     }
     else if ('\0' == next_char) { /* end of input */
@@ -1508,8 +1522,23 @@ H5CL__lex_read_token(bool value_expected, bool eoi_expected, H5CL_token_t **toke
     }
     else {
 
-        /* should be un-reachable */
-        assert(false);
+        /* An input character that doesn't start an identifier, a number,
+         * or end-of-input.  This is ordinary malformed input (e.g. stray
+         * punctuation in a user- or file-supplied VFD configuration
+         * string), not a library-internal invariant violation -- report it
+         * as a normal parse error instead of aborting the process.
+         */
+        if (H5CL__construct_err_ctx(lex_vars_ptr) < 0) {
+
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
+                        "Unexpected character '%c' in input string.  Error constructing context.",
+                        next_char);
+        }
+        else {
+
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Unexpected character '%c' in input string.  Context: %s",
+                        next_char, lex_vars_ptr->err_ctx);
+        }
     }
 
     *token_ptr_ptr = &(lex_vars_ptr->token);
@@ -1678,7 +1707,7 @@ H5CL__parse_name_value_pair(H5CL_nv_pair_t *nv_pair_ptr, H5CL_lex_vars_t *lex_va
     H5CL_token_t *token_ptr;
     herr_t        ret_value = SUCCEED; /* Return value */
 
-    FUNC_ENTER_NOAPI(FAIL)
+    FUNC_ENTER_PACKAGE
 
     assert(nv_pair_ptr);
     assert(H5CL_NV_PAIR_STRUCT_TAG == nv_pair_ptr->struct_tag);
@@ -1969,7 +1998,7 @@ H5CL__parse_name_value_pair_list(H5CL_nv_pair_t *nv_pairs, int max_nv_pairs, H5C
     H5CL_token_t *token_ptr = NULL;
     herr_t        ret_value = SUCCEED; /* Return value */
 
-    FUNC_ENTER_NOAPI(FAIL)
+    FUNC_ENTER_PACKAGE
 
     assert(nv_pairs);
     assert(max_nv_pairs > 0);

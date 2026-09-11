@@ -949,9 +949,11 @@
         (page_buf)->index_size += (int64_t)((entry_ptr)->size);                                              \
         if ((entry_ptr)->is_dirty) {                                                                         \
             (page_buf)->dirty_index_size += (int64_t)((entry_ptr)->size);                                    \
+            (page_buf)->dirty_index_len++;                                                                   \
         }                                                                                                    \
         else {                                                                                               \
             (page_buf)->clean_index_size += (int64_t)((entry_ptr)->size);                                    \
+            (page_buf)->clean_index_len++;                                                                   \
         }                                                                                                    \
         if ((entry_ptr)->is_metadata) {                                                                      \
             if ((entry_ptr)->is_mpmde) {                                                                     \
@@ -990,9 +992,11 @@
         (page_buf)->index_size -= (int64_t)((entry_ptr)->size);                                              \
         if ((entry_ptr)->is_dirty) {                                                                         \
             (page_buf)->dirty_index_size -= (int64_t)((entry_ptr)->size);                                    \
+            (page_buf)->dirty_index_len--;                                                                   \
         }                                                                                                    \
         else {                                                                                               \
             (page_buf)->clean_index_size -= (int64_t)((entry_ptr)->size);                                    \
+            (page_buf)->clean_index_len--;                                                                   \
         }                                                                                                    \
         if ((entry_ptr)->is_metadata) {                                                                      \
             if ((entry_ptr)->is_mpmde) {                                                                     \
@@ -1047,6 +1051,8 @@
         H5PB__PRE_HT_UPDATE_FOR_ENTRY_CLEAN_SC(page_buf, entry_ptr);                                         \
         (page_buf)->dirty_index_size -= (int64_t)((entry_ptr)->size);                                        \
         (page_buf)->clean_index_size += (int64_t)((entry_ptr)->size);                                        \
+        (page_buf)->dirty_index_len--;                                                                       \
+        (page_buf)->clean_index_len++;                                                                       \
         H5PB__POST_HT_UPDATE_FOR_ENTRY_CLEAN_SC(page_buf, entry_ptr);                                        \
     }
 
@@ -1055,6 +1061,8 @@
         H5PB__PRE_HT_UPDATE_FOR_ENTRY_DIRTY_SC(page_buf, entry_ptr);                                         \
         (page_buf)->clean_index_size -= (int64_t)((entry_ptr)->size);                                        \
         (page_buf)->dirty_index_size += (int64_t)((entry_ptr)->size);                                        \
+        (page_buf)->clean_index_len--;                                                                       \
+        (page_buf)->dirty_index_len++;                                                                       \
         H5PB__POST_HT_UPDATE_FOR_ENTRY_DIRTY_SC(page_buf, entry_ptr);                                        \
     }
 

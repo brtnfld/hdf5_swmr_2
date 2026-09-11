@@ -975,10 +975,14 @@ H5F_vfd_swmr_writer_end_of_tick(H5F_t *f)
 
         HGOTO_ERROR(H5E_FILE, H5E_WRITEERROR, FAIL, "low level truncate failed");
 
-    /* 3) If this is the first tick (i.e. tick == 1), create the
-     *    in memory version of the metadata file index.
+    /* 3) If the in-memory metadata file index doesn't exist yet, create it.
+     *    Mirrors the reader's equivalent lazy-allocation guard in
+     *    H5F_vfd_swmr_reader_end_of_tick() -- checking mdf_idx itself rather
+     *    than an exact tick_num value means this doesn't depend on this
+     *    function's first call landing on a particular tick number (e.g. a
+     *    writer that flushes or closes before any tick has elapsed).
      */
-    if ((shared->tick_num == 1) && (H5F__vfd_swmr_create_index(shared) < 0))
+    if ((shared->mdf_idx == NULL) && (H5F__vfd_swmr_create_index(shared) < 0))
 
         HGOTO_ERROR(H5E_FILE, H5E_CANTALLOC, FAIL, "unable to allocate metadata file index");
 
@@ -1486,12 +1490,11 @@ H5F__vfd_swmr_insert_eot_entry(eot_queue_entry_t *entry_ptr)
 void
 H5F_vfd_swmr_update_entry_eot(eot_queue_entry_t *entry)
 {
-    H5F_t        *f      = entry->vfd_swmr_file;
-    H5F_shared_t *shared = f->shared;
+    H5F_shared_t *shared = entry->vfd_swmr_shared;
 
     FUNC_ENTER_NOAPI_NOINIT_NOERR
 
-    /* Free the entry on the EOT queue that corresponds to f */
+    /* Free the entry on the EOT queue that corresponds to shared */
 
     TAILQ_REMOVE(&eot_queue_g, entry, link);
 
@@ -1516,14 +1519,15 @@ herr_t
 H5F_vfd_swmr_remove_entry_eot(H5F_t *f)
 {
     eot_queue_entry_t *curr;
+    H5F_shared_t      *shared = f->shared;
 
     FUNC_ENTER_NOAPI_NOINIT_NOERR
 
-    /* Free the entry on the EOT queue that corresponds to f */
+    /* Free the entry on the EOT queue that corresponds to f's shared file */
 
     TAILQ_FOREACH(curr, &eot_queue_g, link)
     {
-        if (curr->vfd_swmr_file == f)
+        if (curr->vfd_swmr_shared == shared)
             break;
     }
 
@@ -1559,13 +1563,84 @@ H5F_vfd_swmr_insert_entry_eot(H5F_t *f)
     entry_ptr->vfd_swmr_writer = shared->vfd_swmr_writer;
     entry_ptr->tick_num        = shared->tick_num;
     entry_ptr->end_of_tick     = shared->end_of_tick;
-    entry_ptr->vfd_swmr_file   = f;
+    entry_ptr->vfd_swmr_shared = shared;
 
     H5F__vfd_swmr_insert_eot_entry(entry_ptr);
 
 done:
     FUNC_LEAVE_NOAPI(ret_value)
 } /* end H5F_vfd_swmr_insert_entry_eot() */
+
+/*-------------------------------------------------------------------------
+ * Function:    H5F_vfd_swmr_sibling_insert
+ *
+ * Purpose:     Add f to the list of live H5F_t's sharing f->shared,
+ *              rooted at f->shared->vfd_swmr_sib_head. Called on every
+ *              open of a VFD SWMR file (not gated on nrefs), so the list
+ *              always reflects every currently-open handle to the file.
+ *              See the comment on H5F_shared_t.vfd_swmr_sib_head for why
+ *              this list exists.
+ *
+ * Return:      void
+ *-------------------------------------------------------------------------
+ */
+void
+H5F_vfd_swmr_sibling_insert(H5F_t *f)
+{
+    H5F_shared_t *shared = f->shared;
+
+    FUNC_ENTER_NOAPI_NOINIT_NOERR
+
+    assert(f->vfd_swmr_sib_next == NULL);
+    assert(f->vfd_swmr_sib_prev == NULL);
+
+    f->vfd_swmr_sib_next = shared->vfd_swmr_sib_head;
+    f->vfd_swmr_sib_prev = NULL;
+    if (shared->vfd_swmr_sib_head != NULL)
+        shared->vfd_swmr_sib_head->vfd_swmr_sib_prev = f;
+    shared->vfd_swmr_sib_head = f;
+
+    FUNC_LEAVE_NOAPI_VOID
+} /* end H5F_vfd_swmr_sibling_insert() */
+
+/*-------------------------------------------------------------------------
+ * Function:    H5F_vfd_swmr_sibling_remove
+ *
+ * Purpose:     Remove f from the list of live H5F_t's sharing f->shared.
+ *              Called on every close of a VFD SWMR file handle, whether or
+ *              not this is the last reference (nrefs may remain > 0
+ *              afterward). Safe to call on an f that was never inserted
+ *              (e.g. vfd_swmr was never actually enabled for this open):
+ *              a no-op in that case, detected by f having no links and not
+ *              being the list head.
+ *
+ * Return:      void
+ *-------------------------------------------------------------------------
+ */
+void
+H5F_vfd_swmr_sibling_remove(H5F_t *f)
+{
+    H5F_shared_t *shared = f->shared;
+
+    FUNC_ENTER_NOAPI_NOINIT_NOERR
+
+    if (shared->vfd_swmr_sib_head != f && f->vfd_swmr_sib_next == NULL && f->vfd_swmr_sib_prev == NULL)
+        goto done; /* f was never inserted -- nothing to do */
+
+    if (f->vfd_swmr_sib_prev != NULL)
+        f->vfd_swmr_sib_prev->vfd_swmr_sib_next = f->vfd_swmr_sib_next;
+    else
+        shared->vfd_swmr_sib_head = f->vfd_swmr_sib_next;
+
+    if (f->vfd_swmr_sib_next != NULL)
+        f->vfd_swmr_sib_next->vfd_swmr_sib_prev = f->vfd_swmr_sib_prev;
+
+    f->vfd_swmr_sib_next = NULL;
+    f->vfd_swmr_sib_prev = NULL;
+
+done:
+    FUNC_LEAVE_NOAPI_VOID
+} /* end H5F_vfd_swmr_sibling_remove() */
 
 /*-------------------------------------------------------------------------
  * Function:    H5F_dump_eot_queue()
@@ -1584,9 +1659,9 @@ H5F_dump_eot_queue(void)
     FUNC_ENTER_NOAPI_NOINIT_NOERR
 
     for (curr = TAILQ_FIRST(&eot_queue_g), i = 0; curr != NULL; curr = TAILQ_NEXT(curr, link), i++) {
-        fprintf(stderr, "%d: %s tick_num %" PRIu64 ", end_of_tick %jd.%09ld, vfd_swmr_file %p\n", i,
+        fprintf(stderr, "%d: %s tick_num %" PRIu64 ", end_of_tick %jd.%09ld, vfd_swmr_shared %p\n", i,
                 curr->vfd_swmr_writer ? "writer" : "not writer", curr->tick_num, curr->end_of_tick.tv_sec,
-                curr->end_of_tick.tv_nsec, (void *)curr->vfd_swmr_file);
+                curr->end_of_tick.tv_nsec, (void *)curr->vfd_swmr_shared);
     }
 
     if (i == 0)
@@ -1921,8 +1996,20 @@ H5F_vfd_swmr_enlarge_shadow_index(H5F_t *f)
     old_mdf_idx     = shared->mdf_idx;
     old_mdf_idx_len = shared->mdf_idx_len;
 
-    /* New length is double previous or UINT32_MAX, whichever is smaller. */
-    if (UINT32_MAX - old_mdf_idx_len >= old_mdf_idx_len)
+    /* New length is double previous or UINT32_MAX, whichever is smaller.
+     *
+     * The old length being 0 must be handled separately: doubling it yields
+     * 0 again, H5MM_calloc(0) below still returns a non-NULL (zero-length)
+     * allocation, and the caller -- H5PB_vfd_swmr__update_index(), whose
+     * growth check is "new_index_entry_index >= shared->mdf_idx_len", so
+     * 0 >= 0 sends it here -- then writes an index entry at offset 0 of
+     * that zero-length block. That is a heap buffer overflow (confirmed
+     * under valgrind: "Invalid write of size 8" into the block allocated
+     * here). Start from 1 instead so growth can actually escape zero.
+     */
+    if (old_mdf_idx_len == 0)
+        new_mdf_idx_len = 1;
+    else if (UINT32_MAX - old_mdf_idx_len >= old_mdf_idx_len)
         new_mdf_idx_len = old_mdf_idx_len * 2;
     else
         new_mdf_idx_len = UINT32_MAX;
@@ -2030,8 +2117,7 @@ H5F_vfd_swmr_process_eot_queue(hbool_t entering_api)
     first_head = head = TAILQ_FIRST(&eot_queue_g);
 
     while (head != NULL) {
-        H5F_t        *f      = head->vfd_swmr_file;
-        H5F_shared_t *shared = f->shared;
+        H5F_shared_t *shared = head->vfd_swmr_shared;
 
 #if defined(H5_HAVE_TIMESPEC_GET)
         if (timespec_get(&now, TIME_UTC) != TIME_UTC)
@@ -2066,12 +2152,28 @@ H5F_vfd_swmr_process_eot_queue(hbool_t entering_api)
         if (timespeccmp(&head->end_of_tick, &shared->end_of_tick, <)) {
             H5F_vfd_swmr_update_entry_eot(head);
         }
-        else if (shared->vfd_swmr_writer) {
-            if (H5F_vfd_swmr_writer_end_of_tick(f) < 0)
-                HGOTO_ERROR(H5E_FUNC, H5E_CANTSET, FAIL, "end of tick error for VFD SWMR writer");
-        }
-        else if (H5F_vfd_swmr_reader_end_of_tick(f, entering_api) < 0) {
-            HGOTO_ERROR(H5E_FUNC, H5E_CANTSET, FAIL, "end of tick error for VFD SWMR reader");
+        else {
+            /* The writer/reader end-of-tick routines below take an H5F_t*
+             * because they call several per-open-handle routines
+             * (H5AC_flush(), H5D_flush_all(), H5MV_alloc(), etc.). The
+             * specific H5F_t that originally caused this entry to be
+             * inserted may since have been closed while sibling opens of
+             * the same file remain live (H5F_shared_t.vfd_swmr_sib_head is
+             * maintained independently of which H5F_t triggered insertion
+             * for exactly this reason) -- grab whichever live sibling is
+             * currently at the head of that list; any of them shares the
+             * same ->shared this code actually operates on.
+             */
+            H5F_t *f = shared->vfd_swmr_sib_head;
+
+            assert(f != NULL);
+            if (shared->vfd_swmr_writer) {
+                if (H5F_vfd_swmr_writer_end_of_tick(f) < 0)
+                    HGOTO_ERROR(H5E_FUNC, H5E_CANTSET, FAIL, "end of tick error for VFD SWMR writer");
+            }
+            else if (H5F_vfd_swmr_reader_end_of_tick(f, entering_api) < 0) {
+                HGOTO_ERROR(H5E_FUNC, H5E_CANTSET, FAIL, "end of tick error for VFD SWMR reader");
+            }
         }
 
         head = TAILQ_FIRST(&eot_queue_g);
@@ -2504,7 +2606,7 @@ H5F__vfd_swmr_end_tick(H5F_t *f)
     /* Search EOT queue */
     TAILQ_FOREACH(curr, &eot_queue_g, link)
     {
-        if (curr->vfd_swmr_file == f)
+        if (curr->vfd_swmr_shared == f->shared)
             break;
     }
 
@@ -2549,7 +2651,7 @@ H5F__vfd_swmr_disable_end_of_tick(H5F_t *f)
     /* Search EOT queue */
     TAILQ_FOREACH(curr, &eot_queue_g, link)
     {
-        if (curr->vfd_swmr_file == f)
+        if (curr->vfd_swmr_shared == f->shared)
             break;
     }
 
@@ -2590,7 +2692,7 @@ H5F__vfd_swmr_enable_end_of_tick(H5F_t *f)
     /* Search EOT queue */
     TAILQ_FOREACH(curr, &eot_queue_g, link)
     {
-        if (curr->vfd_swmr_file == f)
+        if (curr->vfd_swmr_shared == f->shared)
             break;
     }
 

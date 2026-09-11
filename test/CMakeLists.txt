@@ -521,6 +521,8 @@ set (H5_TESTS
     cache_logging
     cork
     swmr
+    vfd_swmr
+    vfd_cl
     vol
     timer
     cmpd_dtransform

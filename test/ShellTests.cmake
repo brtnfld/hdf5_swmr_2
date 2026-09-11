@@ -52,10 +52,18 @@ elseif (UNIX)
     configure_file(${HDF5_TEST_SOURCE_DIR}/test_use_cases.sh.in ${HDF5_TEST_BINARY_DIR}/H5TEST/test_use_cases.sh @ONLY)
     configure_file(${HDF5_TEST_SOURCE_DIR}/test_swmr.sh.in ${HDF5_TEST_BINARY_DIR}/H5TEST/test_swmr.sh @ONLY)
     configure_file(${HDF5_TEST_SOURCE_DIR}/test_vds_swmr.sh.in ${HDF5_TEST_BINARY_DIR}/H5TEST/test_vds_swmr.sh @ONLY)
-    if (TARGET aux_process)
+    # NOTE: `if (TARGET aux_process)` will not work here -- test/ (via the
+    # top-level CMakeLists.txt's `include (CMakeTests.cmake)`) is processed
+    # before `add_subdirectory (utils)` creates that target, so the check
+    # would always see "not found" regardless of configuration. Check the
+    # option that gates aux_process's real implementation instead (see
+    # config/ConfigureChecks.cmake), which is declared early enough to be
+    # available here.
+    if (HDF5_ENABLE_VFD_SWMR_UTILS)
       set (AUX_PROCESS "yes")
     else ()
       set (AUX_PROCESS "no")
+      message (WARNING "HDF5_ENABLE_VFD_SWMR_UTILS is OFF (or unavailable, e.g. on Windows); VFD SWMR updater-file integration tests in test_vfd_swmr.sh will be skipped.")
     endif ()
     configure_file(${HDF5_TEST_SOURCE_DIR}/test_vfd_swmr.sh.in ${HDF5_TEST_BINARY_DIR}/H5TEST/test_vfd_swmr.sh @ONLY)
 

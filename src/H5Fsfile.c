@@ -152,6 +152,45 @@ done:
 } /* end H5F__sfile_search() */
 
 /*-------------------------------------------------------------------------
+ * Function:    H5F__sfile_search_vfd_swmr_underlying
+ *
+ * Purpose:     Find an open VFD SWMR (reader) file whose *wrapped* HDF5
+ *              file is lf.
+ *
+ *              H5F__sfile_search() cannot answer this: a VFD SWMR reader's
+ *              H5FD_t belongs to the VFD SWMR driver, and H5FD_cmp() orders
+ *              by driver class before dispatching a driver's cmp callback,
+ *              so a plain (e.g. sec2) handle never compares equal to it
+ *              even when both refer to the same file on disk. Callers that
+ *              need to ask "is this file already open by a VFD SWMR reader
+ *              in this process?" must compare against the wrapped file.
+ *
+ * Return:      Pointer to the matching shared file struct, or NULL
+ *-------------------------------------------------------------------------
+ */
+H5F_shared_t *
+H5F__sfile_search_vfd_swmr_underlying(H5FD_t *lf)
+{
+    H5F_sfile_node_t *curr;
+    H5F_shared_t     *ret_value = NULL; /* Return value */
+
+    FUNC_ENTER_PACKAGE_NOERR
+
+    /* Sanity check */
+    assert(lf);
+
+    for (curr = H5F_sfile_head_s; curr != NULL; curr = curr->next) {
+        H5FD_t *under_lf = H5FD_vfd_swmr_get_underlying_file(curr->shared->lf);
+
+        if (under_lf != NULL && 0 == H5FD_cmp(under_lf, lf))
+            HGOTO_DONE(curr->shared);
+    }
+
+done:
+    FUNC_LEAVE_NOAPI(ret_value)
+} /* end H5F__sfile_search_vfd_swmr_underlying() */
+
+/*-------------------------------------------------------------------------
  * Function:    H5F__sfile_remove
  *
  * Purpose:     Remove a "shared" file struct from the list of open files

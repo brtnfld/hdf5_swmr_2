@@ -111,17 +111,17 @@ run_command_with_crash(const char *outbase, char *const cmd_argv[], double delay
         if (WIFEXITED(status)) {
             return_code = WEXITSTATUS(status);
             if (verbose)
-                HDfprintf(stdout, "Command exited with status %d\n", return_code);
+                fprintf(stdout, "Command exited with status %d\n", return_code);
         }
         else if (WIFSIGNALED(status)) {
             return_code = 128 + WTERMSIG(status);
             if (verbose)
-                HDfprintf(stdout, "Command was killed by signal %d\n", WTERMSIG(status));
+                fprintf(stdout, "Command was killed by signal %d\n", WTERMSIG(status));
         }
         else {
             return_code = -1;
             if (verbose)
-                HDfprintf(stdout, "Command terminated abnormally (status=0x%x)\n", status);
+                fprintf(stdout, "Command terminated abnormally (status=0x%x)\n", status);
         }
 
         /* Write the return code to file */
@@ -143,26 +143,26 @@ error:
 static void
 usage(void)
 {
-    HDprintf("\nUsage: crasher [options] <delay> <command> [args...]\n");
-    HDprintf("\n");
-    HDprintf("Executes the specified command as a forked process and then terminates it with\n");
-    HDprintf("SIGKILL after <delay> seconds. If <delay> is 0, the command is killed\n");
-    HDprintf("immediately.\n");
-    HDprintf("\n");
-    HDprintf("   Options:\n");
-    HDprintf("     -h : Show this help message, then exit.\n");
-    HDprintf("     -v : Print verbose output.\n");
-    HDprintf("     -p : Print the command's output to console instead of redirecting to\n");
-    HDprintf("          <command>.out.\n");
-    HDprintf("\n");
-    HDprintf("   Required Arguments:\n");
-    HDprintf("     <delay>             : Time in seconds to wait before crashing (decimals allowed, \n");
-    HDprintf("                           e.g., 1.5 or 0.25, max precision 6 decimal places).\n");
-    HDprintf("     <command> [args...] : Command to execute and then crash. Any arguments after\n");
-    HDprintf("                           the command are passed to it.\n");
-    HDprintf("\nExample:\n");
-    HDprintf("  crasher -v 5 ./my_program arg1 arg2\n");
-    HDprintf("\n");
+    printf("\nUsage: crasher [options] <delay> <command> [args...]\n");
+    printf("\n");
+    printf("Executes the specified command as a forked process and then terminates it with\n");
+    printf("SIGKILL after <delay> seconds. If <delay> is 0, the command is killed\n");
+    printf("immediately.\n");
+    printf("\n");
+    printf("   Options:\n");
+    printf("     -h : Show this help message, then exit.\n");
+    printf("     -v : Print verbose output.\n");
+    printf("     -p : Print the command's output to console instead of redirecting to\n");
+    printf("          <command>.out.\n");
+    printf("\n");
+    printf("   Required Arguments:\n");
+    printf("     <delay>             : Time in seconds to wait before crashing (decimals allowed, \n");
+    printf("                           e.g., 1.5 or 0.25, max precision 6 decimal places).\n");
+    printf("     <command> [args...] : Command to execute and then crash. Any arguments after\n");
+    printf("                           the command are passed to it.\n");
+    printf("\nExample:\n");
+    printf("  crasher -v 5 ./my_program arg1 arg2\n");
+    printf("\n");
 }
 
 int
@@ -191,7 +191,7 @@ main(int argc, char *argv[])
             i++;
         }
         else {
-            HDprintf("Unknown option: %s\n", argv[i]);
+            printf("Unknown option: %s\n", argv[i]);
             usage();
             exit(1);
         }
@@ -199,20 +199,20 @@ main(int argc, char *argv[])
 
     /* Check that delay argument is present */
     if (i >= argc) {
-        HDprintf("Error: Missing required <delay> and <command> arguments\n");
+        printf("Error: Missing required <delay> and <command> arguments\n");
         usage();
         exit(1);
     }
 
     /* Parse delay value */
-    delay = HDstrtod(argv[i], &endptr);
+    delay = strtod(argv[i], &endptr);
     if (endptr == argv[i] || *endptr != '\0') {
-        HDprintf("Error: Invalid delay value '%s'\n", argv[i]);
+        printf("Error: Invalid delay value '%s'\n", argv[i]);
         usage();
         exit(1);
     }
     if (delay < 0) {
-        HDprintf("Error: Delay must be non-negative\n");
+        printf("Error: Delay must be non-negative\n");
         usage();
         exit(1);
     }
@@ -220,7 +220,7 @@ main(int argc, char *argv[])
 
     /* Check that command argument is present */
     if (i >= argc) {
-        HDprintf("Error: Missing required <command> argument\n");
+        printf("Error: Missing required <command> argument\n");
         usage();
         exit(1);
     }
@@ -239,18 +239,18 @@ main(int argc, char *argv[])
 
     /* Sanity check - this should never happen if cmd_argv[0] exists */
     if (cmd_name == NULL || cmd_name[0] == '\0') {
-        HDprintf("Error: Command name is empty\n");
+        printf("Error: Command name is empty\n");
         usage();
         exit(1);
     }
 
     if (verbose) {
-        HDprintf("Running and crashing command after %.1f second delay: %s", delay, cmd_argv[0]);
+        printf("Running and crashing command after %.1f second delay: %s", delay, cmd_argv[0]);
         for (int j = 1; cmd_argv[j] != NULL; j++) {
-            HDprintf(" %s", cmd_argv[j]);
+            printf(" %s", cmd_argv[j]);
         }
-        HDprintf("\n");
-        HDprintf("Output will be saved to: %s.out\n", cmd_name);
+        printf("\n");
+        printf("Output will be saved to: %s.out\n", cmd_name);
     }
 
     /* Run the command with the specified delay */

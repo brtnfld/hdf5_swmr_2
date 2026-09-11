@@ -462,6 +462,17 @@ struct H5F_shared_t {
     hbool_t    vfd_swmr_log_on;         /* Flag to indicate if the log file is active */
     H5_timer_t vfd_swmr_log_start_time; /* Starting time for log message timestamps */
 
+    /* Head of the intrusive list of every live H5F_t sharing this struct
+     * (linked via H5F_t.vfd_swmr_sib_{next,prev}), maintained whenever
+     * vfd_swmr is set. The EOT queue entry for this file identifies it by
+     * this H5F_shared_t*, not by any specific H5F_t*, since one of several
+     * H5F_t opens can close while nrefs stays > 0; this list is how
+     * EOT-queue tick processing (H5F_vfd_swmr_process_eot_queue()) obtains
+     * a currently-live H5F_t to pass into per-open-handle routines like
+     * H5AC_flush()/H5D_flush_all() when the tick expires. Non-NULL whenever
+     * vfd_swmr is set and nrefs > 0. */
+    struct H5F_t *vfd_swmr_sib_head;
+
 #ifdef H5_HAVE_PARALLEL
     H5P_coll_md_read_flag_t coll_md_read;  /* Do all metadata reads collectively */
     bool                    coll_md_write; /* Do all metadata writes collectively */
@@ -484,6 +495,12 @@ struct H5F_t {
     bool           closing;     /* File is in the process of being closed                       */
     struct H5F_t  *parent;      /* Parent file that this file is mounted to                     */
     unsigned       nmounts;     /* Number of children mounted to this file                      */
+
+    /* VFD SWMR: intrusive doubly-linked list of every live H5F_t sharing
+     * this->shared, maintained only when shared->vfd_swmr is set (see
+     * H5F_shared_t.vfd_swmr_sib_head). NULL/unused otherwise. */
+    struct H5F_t *vfd_swmr_sib_next;
+    struct H5F_t *vfd_swmr_sib_prev;
 };
 
 /*****************************/
@@ -550,6 +567,7 @@ H5_DLL herr_t H5F__accum_reset(H5F_shared_t *f_sh, bool flush, bool force);
 /* Shared file list related routines */
 H5_DLL herr_t        H5F__sfile_add(H5F_shared_t *shared);
 H5_DLL H5F_shared_t *H5F__sfile_search(H5FD_t *lf);
+H5_DLL H5F_shared_t *H5F__sfile_search_vfd_swmr_underlying(H5FD_t *lf);
 H5_DLL herr_t        H5F__sfile_remove(H5F_shared_t *shared);
 
 /* Parallel I/O (i.e. MPI) related routines */

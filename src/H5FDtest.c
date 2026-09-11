@@ -126,7 +126,7 @@ H5FD__vfd_swmr_reader_md_test(H5FD_t *file, unsigned num_entries, H5FD_vfd_swmr_
     unsigned                   i;
     herr_t                     ret_value = SUCCEED; /* Return value */
 
-    FUNC_ENTER_NOAPI_NOINIT
+    FUNC_ENTER_PACKAGE
 
     /* Retrieve index from VFD SWMR driver */
     /* Initial call to get # of entries */

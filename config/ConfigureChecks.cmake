@@ -633,6 +633,28 @@ if (HDF5_ENABLE_DIRECT_VFD)
 endif ()
 
 #-----------------------------------------------------------------------------
+# Check whether the VFD SWMR auxiliary-process / crash-recovery utilities
+# can be built. Declared here (rather than in utils/vfd_swmr/CMakeLists.txt,
+# where the targets themselves live) because both test/ShellTests.cmake and
+# H5pubconf.h.in need this value, and test/ is processed (via the top-level
+# CMakeLists.txt's `include (CMakeTests.cmake)`) *before* `add_subdirectory
+# (utils)` runs -- a variable set inside utils/vfd_swmr/CMakeLists.txt would
+# not exist yet when test/ needs it. Re-declaring HDF5_BUILD_UTILS's option
+# here too (it is normally declared in utils/CMakeLists.txt) is required for
+# the same reason: this option's own default depends on it, and CMake's
+# option() is a no-op if the cache entry already exists, so the later
+# declaration in utils/CMakeLists.txt remains the source of truth for its
+# on-screen help text and does not conflict with this one.
+#-----------------------------------------------------------------------------
+option (HDF5_BUILD_UTILS "Build HDF5 Utils" ON)
+cmake_dependent_option (HDF5_ENABLE_VFD_SWMR_UTILS
+    "Build VFD SWMR auxiliary process, crash-recovery, and crash-injection utilities" ON
+    "HDF5_BUILD_UTILS;NOT WIN32" OFF)
+if (HDF5_ENABLE_VFD_SWMR_UTILS)
+  set (${HDF_PREFIX}_HAVE_AUX_PROCESS 1)
+endif ()
+
+#-----------------------------------------------------------------------------
 #  Check if ROS3 driver can be built
 #-----------------------------------------------------------------------------
 option (HDF5_ENABLE_ROS3_VFD "Build the ROS3 Virtual File Driver" OFF)

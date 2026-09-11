@@ -1074,7 +1074,24 @@ H5FD__vfd_swmr_read(H5FD_t *_file, H5FD_mem_t type, hid_t H5_ATTR_UNUSED dxpl_id
         if (-1 == bytes_read)
             HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL,
                         "error reading the page/multi-page entry from the md file");
-        assert(0 <= bytes_read && (size_t)bytes_read <= size);
+
+        /* Unlike H5FDsec2.c's read loop -- which treats a 0-byte read as a
+         * legitimate sparse hole past the logical end of a data file and
+         * zero-fills the remainder -- a short/EOF read here means the shadow
+         * index already claims this page/entry was published for the
+         * current tick, yet the bytes are not (yet, or ever) actually on
+         * disk. That is either a writer/reader race (the index entry was
+         * flushed before the page data) or a truncated/corrupt shadow file;
+         * looping forever on it hangs the reader with no diagnostic, and
+         * zero-filling would silently hand back wrong metadata instead.
+         * Fail loudly so the caller sees a clear error rather than an
+         * infinite loop or fabricated data.
+         */
+        if (0 == bytes_read)
+            HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL,
+                        "short/incomplete read of the page/multi-page entry from the md file");
+
+        assert(0 < bytes_read && (size_t)bytes_read <= size);
 
         size -= (size_t)bytes_read;
         p += bytes_read;
@@ -1827,6 +1844,34 @@ H5FD_vfd_swmr_get_md_path_name(H5FD_t *_file, char **name)
     FUNC_LEAVE_NOAPI_VOID
 
 } /* H5FD_vfd_swmr_get_md_path_name() */
+
+/*-------------------------------------------------------------------------
+ * Function:    H5FD_vfd_swmr_get_underlying_file
+ *
+ * Purpose:     Return the HDF5 file that a VFD SWMR reader's H5FD_t wraps,
+ *              or NULL if _file is not a VFD SWMR file. The driver-id check
+ *              makes this safe to call on any H5FD_t.
+ *
+ *              Note: the check compares driver *ids*, not the class pointer
+ *              against &H5FD_vfd_swmr_g -- H5FD_register() copies the class
+ *              struct, so a live file's cls points at that copy and a
+ *              pointer comparison silently never matches.
+ *
+ * Return:      The wrapped H5FD_t*, or NULL
+ *-------------------------------------------------------------------------
+ */
+H5FD_t *
+H5FD_vfd_swmr_get_underlying_file(H5FD_t *_file)
+{
+    H5FD_t *ret_value = NULL;
+
+    FUNC_ENTER_NOAPI_NOINIT_NOERR
+
+    if (_file != NULL && H5FD_VFD_SWMR_id_g != H5I_INVALID_HID && _file->driver_id == H5FD_VFD_SWMR_id_g)
+        ret_value = ((H5FD_vfd_swmr_t *)_file)->hdf5_file_lf;
+
+    FUNC_LEAVE_NOAPI(ret_value)
+} /* H5FD_vfd_swmr_get_underlying_file() */
 
 /*-------------------------------------------------------------------------
  * Function:    H5FD_vfd_swmr_get_make_believe

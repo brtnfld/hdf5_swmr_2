@@ -109,6 +109,7 @@ static herr_t H5MF__sects_cb(H5FS_section_info_t *_sect, void *_udata);
 
 /* VFD SWMR */
 static herr_t H5MF__defer_free(H5F_shared_t *shared, H5FD_mem_t alloc_type, haddr_t addr, hsize_t size);
+static herr_t H5MF__xfree_impl(H5F_t *f, H5FD_mem_t alloc_type, haddr_t addr, hsize_t size);
 
 /*********************/
 /* Package Variables */
@@ -157,7 +158,7 @@ H5MF_process_deferred_frees(H5F_t *f, const uint64_t tick_num)
     FUNC_ENTER_NOAPI_NOERR
 
     /* Have to empty the queue before processing it because we
-     * could re-enter this routine through H5MF_xfree.  If
+     * could re-enter this routine through H5MF__xfree_impl.  If
      * items were still on the queue, we would enter
      * H5MF_process_deferred_frees() recursively until the queue was empty.
      */
@@ -168,8 +169,11 @@ H5MF_process_deferred_frees(H5F_t *f, const uint64_t tick_num)
             break;
         SIMPLEQ_REMOVE_HEAD(&defrees, link);
 
-        /* Record errors here, but keep trying to free */
-        if (H5MF_xfree(f, df->alloc_type, df->addr, df->size) < 0)
+        /* Record errors here, but keep trying to free.  This must call the
+         * impl directly: going back through H5MF_xfree() would re-defer the
+         * very entries being reclaimed.
+         */
+        if (H5MF__xfree_impl(f, df->alloc_type, df->addr, df->size) < 0)
             ret_value = FAIL;
         H5MM_xfree(df);
     }
@@ -819,6 +823,13 @@ H5MF_alloc(H5F_t *f, H5FD_mem_t alloc_type, hsize_t size)
     assert(f->shared->lf);
     assert(size > 0);
 
+    /* Reclaim any deferred frees whose lag has expired, so that the space is
+     * available to satisfy this allocation (see H5MF_xfree()).
+     */
+    if (f->shared->vfd_swmr_writer)
+        if (H5MF_process_deferred_frees(f, f->shared->tick_num) < 0)
+            HGOTO_ERROR(H5E_RESOURCE, H5E_CANTGC, HADDR_UNDEF, "could not process deferrals");
+
     H5MF__alloc_to_fs_type(f->shared, alloc_type, size, &fs_type);
 
 #ifdef H5MF_ALLOC_DEBUG_MORE
@@ -1100,17 +1111,18 @@ done:
 } /* end H5MF_alloc_tmp() */
 
 /*-------------------------------------------------------------------------
- * Function:    H5MF_xfree
+ * Function:    H5MF__xfree_impl
  *
  * Purpose:     Frees part of a file, making that part of the file
- *              available for reuse.
+ *              available for reuse.  This is the unconditional free; callers
+ *              that must honor VFD SWMR's reader lag go through H5MF_xfree().
  *
  * Return:      Non-negative on success/Negative on failure
  *
  *-------------------------------------------------------------------------
  */
-herr_t
-H5MF_xfree(H5F_t *f, H5FD_mem_t alloc_type, haddr_t addr, hsize_t size)
+static herr_t
+H5MF__xfree_impl(H5F_t *f, H5FD_mem_t alloc_type, haddr_t addr, hsize_t size)
 {
     H5F_mem_page_t       fs_type;                   /* Free space type (mapped from allocation type) */
     H5MF_free_section_t *node = NULL;               /* Free space section pointer */
@@ -1119,7 +1131,7 @@ H5MF_xfree(H5F_t *f, H5FD_mem_t alloc_type, haddr_t addr, hsize_t size)
     H5AC_ring_t          fsm_ring;                  /* Ring of FSM */
     herr_t               ret_value = SUCCEED;       /* Return value */
 
-    FUNC_ENTER_NOAPI_TAG(H5AC__FREESPACE_TAG, FAIL)
+    FUNC_ENTER_PACKAGE_TAG(H5AC__FREESPACE_TAG)
 #ifdef H5MF_ALLOC_DEBUG
     fprintf(stderr, "%s: Entering - alloc_type = %u, addr = %" PRIuHADDR ", size = %" PRIuHSIZE "\n",
             __func__, (unsigned)alloc_type, addr, size);
@@ -1282,6 +1294,53 @@ done:
 #ifdef H5MF_ALLOC_DEBUG_DUMP
     H5MF__sects_dump(f, stderr);
 #endif /* H5MF_ALLOC_DEBUG_DUMP */
+    FUNC_LEAVE_NOAPI_TAG(ret_value)
+} /* end H5MF__xfree_impl() */
+
+/*-------------------------------------------------------------------------
+ * Function:    H5MF_xfree
+ *
+ * Purpose:     Frees part of a file, making that part of the file
+ *              available for reuse.
+ *
+ *              Under VFD SWMR, a writer must not hand raw-data space back
+ *              for immediate reuse: readers may still be up to max_lag ticks
+ *              behind and continue to reference it, and raw data is exactly
+ *              what the page buffer does *not* shield them from -- H5PB_read()
+ *              and H5PB_write() bypass the page buffer for H5FD_MEM_DRAW when
+ *              page_buf->vfd_swmr is set.  Such frees are therefore deferred
+ *              until tick_num + max_lag, and the expired ones are reclaimed
+ *              here and in H5MF_alloc(); H5MF_free_aggrs() drains whatever is
+ *              left once the file is closing.
+ *
+ *              Metadata frees, non-VFD-SWMR-writer files, and a file that is
+ *              already closing all take the immediate path.
+ *
+ * Return:      Non-negative on success/Negative on failure
+ *
+ *-------------------------------------------------------------------------
+ */
+herr_t
+H5MF_xfree(H5F_t *f, H5FD_mem_t alloc_type, haddr_t addr, hsize_t size)
+{
+    herr_t ret_value = SUCCEED; /* Return value */
+
+    FUNC_ENTER_NOAPI_TAG(H5AC__FREESPACE_TAG, FAIL)
+
+    /* check arguments */
+    assert(f);
+    if (!H5_addr_defined(addr) || 0 == size)
+        HGOTO_DONE(SUCCEED);
+    assert(addr != 0); /* Can't deallocate the superblock :-) */
+
+    if (!f->shared->vfd_swmr_writer || f->shared->closing || alloc_type != H5FD_MEM_DRAW)
+        ret_value = H5MF__xfree_impl(f, alloc_type, addr, size);
+    else if (H5MF__defer_free(f->shared, alloc_type, addr, size) < 0)
+        HGOTO_ERROR(H5E_RESOURCE, H5E_CANTFREE, FAIL, "could not defer free");
+    else if (H5MF_process_deferred_frees(f, f->shared->tick_num) < 0)
+        HGOTO_ERROR(H5E_RESOURCE, H5E_CANTGC, FAIL, "could not process deferrals");
+
+done:
     FUNC_LEAVE_NOAPI_TAG(ret_value)
 } /* end H5MF_xfree() */
 

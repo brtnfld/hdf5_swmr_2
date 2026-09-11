@@ -305,6 +305,14 @@ H5FD_vfd_swmr_pageno_to_mdf_idx_entry(H5FD_vfd_swmr_idx_entry_t *idx, uint32_t n
 /* Function prototypes for VFD SWMR */
 H5_DLL herr_t H5FD_vfd_swmr_get_tick_and_idx(H5FD_t *_file, hbool_t read_index, uint64_t *tick_ptr,
                                              uint32_t *num_entries_ptr, H5FD_vfd_swmr_idx_entry_t index[]);
+/* Returns the HDF5 file that a VFD SWMR reader's H5FD_t wraps, or NULL if
+ * _file is not a VFD SWMR file. Needed because H5FD_cmp() compares driver
+ * classes before dispatching a driver's cmp callback, so a VFD SWMR
+ * reader's handle never compares equal to a plain (e.g. sec2) handle on the
+ * same physical file -- callers wanting to ask "is this same file already
+ * open under a different driver?" must ask about the wrapped file instead.
+ */
+H5_DLL H5FD_t *H5FD_vfd_swmr_get_underlying_file(H5FD_t *_file);
 
 /* Function prototypes for MPI based VFDs*/
 #ifdef H5_HAVE_PARALLEL

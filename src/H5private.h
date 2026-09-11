@@ -1279,6 +1279,7 @@ extern char H5_lib_vers_info_g[];
  * typedef; only a pointer to it is needed below.
  */
 struct H5F_t;
+struct H5F_shared_t;
 
 /*----------------------------------------------------------------------------
  *  struct eot_queue_entry_t
@@ -1286,7 +1287,18 @@ struct H5F_t;
  *  This is the structure for an entry on the end-of-tick queue (EOT queue)
  *  of files opened in either VFD SWMR write or VFD SWMR read mode.
  *
- *  vfd_swmr_file: Pointer to the H5F_t instance for the associated file.
+ *  vfd_swmr_shared: Pointer to the H5F_shared_t instance for the associated
+ *      file. There is exactly one entry per *shared* file, matching the RFC
+ *      (section 3.2.2) design and the fact that insertion/removal are gated
+ *      on shared->nrefs transitioning 0->1 / 1->0 -- NOT one entry per
+ *      H5Fopen() call. This field intentionally does not hold a specific
+ *      H5F_t*: multiple H5F_t opens of the same file share one
+ *      H5F_shared_t, and any *specific* H5F_t can be closed independently of
+ *      the others while the shared file (and this entry) remains alive.
+ *      Code needing a live H5F_t to pass into per-open-handle routines
+ *      (H5F_vfd_swmr_writer_end_of_tick(), H5F_vfd_swmr_reader_end_of_tick())
+ *      must obtain one via H5F_shared_t.vfd_swmr_sib_head, not by caching a
+ *      handle from here.
  *  vfd_swmr_writer: true if opened in VFD SWMR writer mode.
  *  tick_num: Number of the current tick.
  *  end_of_tick: Expiration time of the current tick.
@@ -1294,10 +1306,10 @@ struct H5F_t;
  *----------------------------------------------------------------------------
  */
 typedef struct eot_queue_entry {
-    hbool_t         vfd_swmr_writer;
-    uint64_t        tick_num;
-    struct timespec end_of_tick;
-    struct H5F_t   *vfd_swmr_file;
+    hbool_t              vfd_swmr_writer;
+    uint64_t             tick_num;
+    struct timespec      end_of_tick;
+    struct H5F_shared_t *vfd_swmr_shared;
     TAILQ_ENTRY(eot_queue_entry) link;
 } eot_queue_entry_t;
 

@@ -10,9 +10,10 @@ if (HDF5_BUILD_UTILS)
   if (HDF5_ENABLE_MIRROR_VFD)  
     add_subdirectory (mirror_vfd)
   endif ()
-  if (HDF5_ENABLE_SUBFILING_VFD)  
+  if (HDF5_ENABLE_SUBFILING_VFD)
     add_subdirectory (subfiling_vfd)
   endif ()
+  add_subdirectory (vfd_swmr)
 endif ()
 
 #-- Add the h5dwalk and test executables

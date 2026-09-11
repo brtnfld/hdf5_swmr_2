@@ -851,6 +851,8 @@ H5_DLL herr_t   H5F_vfd_swmr_reader_end_of_tick(H5F_t *f, hbool_t entering_api);
 H5_DLL herr_t   H5F_vfd_swmr_remove_entry_eot(H5F_t *f);
 H5_DLL herr_t   H5F_vfd_swmr_insert_entry_eot(H5F_t *f);
 H5_DLL void     H5F_vfd_swmr_update_entry_eot(eot_queue_entry_t *entry);
+H5_DLL void     H5F_vfd_swmr_sibling_insert(H5F_t *f);
+H5_DLL void     H5F_vfd_swmr_sibling_remove(H5F_t *f);
 H5_DLL herr_t   H5F_dump_eot_queue(void);
 H5_DLL herr_t   H5F_shadow_image_defer_free(H5F_shared_t                           *shared,
                                             const struct H5FD_vfd_swmr_idx_entry_t *entry);

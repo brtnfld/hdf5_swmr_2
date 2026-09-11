@@ -758,6 +758,13 @@ done:
         assert(f->shared);
         assert(f->shared->lf);
 
+        /* The file is closing, so there is no reader left to lag behind:
+         * reclaim every deferred free rather than only the expired ones,
+         * or the space is lost for good (see H5MF_xfree()).
+         */
+        if (f->shared->closing && H5MF_process_deferred_frees(f, UINT64_MAX) < 0)
+            HGOTO_ERROR(H5E_FILE, H5E_CANTFREE, FAIL, "could not process deferrals");
+
         /* Retrieve metadata aggregator info, if available */
         if (H5MF__aggr_query(f, &(f->shared->meta_aggr), &ma_addr, &ma_size) < 0)
             HGOTO_ERROR(H5E_RESOURCE, H5E_CANTGET, FAIL, "can't query metadata aggregator stats");
