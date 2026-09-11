@@ -639,7 +639,7 @@ endif ()
 # H5pubconf.h.in need this value, and test/ is processed (via the top-level
 # CMakeLists.txt's `include (CMakeTests.cmake)`) *before* `add_subdirectory
 # (utils)` runs -- a variable set inside utils/vfd_swmr/CMakeLists.txt would
-# not exist yet when test/ needs it. Re-declaring HDF5_BUILD_UTILS's option
+# not exist yet when test/ needs it. Redeclaring HDF5_BUILD_UTILS's option
 # here too (it is normally declared in utils/CMakeLists.txt) is required for
 # the same reason: this option's own default depends on it, and CMake's
 # option() is a no-op if the cache entry already exists, so the later

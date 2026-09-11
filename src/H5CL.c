@@ -1479,8 +1479,8 @@ H5CL__lex_read_token(bool value_expected, bool eoi_expected, H5CL_token_t **toke
              * +/-HUGE_VAL.
              */
             if (0 != errno)
-                HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
-                            "Floating point token '%s' is out of range", lex_vars_ptr->token.str_ptr);
+                HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Floating point token '%s' is out of range",
+                            lex_vars_ptr->token.str_ptr);
         }
         else {
 
@@ -1531,13 +1531,13 @@ H5CL__lex_read_token(bool value_expected, bool eoi_expected, H5CL_token_t **toke
         if (H5CL__construct_err_ctx(lex_vars_ptr) < 0) {
 
             HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
-                        "Unexpected character '%c' in input string.  Error constructing context.",
-                        next_char);
+                        "Unexpected character '%c' in input string.  Error constructing context.", next_char);
         }
         else {
 
-            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Unexpected character '%c' in input string.  Context: %s",
-                        next_char, lex_vars_ptr->err_ctx);
+            HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
+                        "Unexpected character '%c' in input string.  Context: %s", next_char,
+                        lex_vars_ptr->err_ctx);
         }
     }
 
