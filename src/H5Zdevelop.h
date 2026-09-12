@@ -326,8 +326,8 @@ typedef struct H5Z_blob_loc_t {
  * \details Called once per blob-bearing filter during H5Dcreate(), after the
  *          \c set_local callback runs.  If the filter class leaves this field
  *          NULL, the library uses its default global-heap (H5HG) writer --
- *          but only if \c read_blob is \e also left NULL: #H5Zregister and
- *          #H5Zregister3 reject a class supplying exactly one of the two,
+ *          but only if \c read_blob is \e also left NULL: #H5Zregister
+ *          rejects a class supplying exactly one of the two,
  *          since a filter that persists its blob one way but recovers it the
  *          library's way (or vice versa) misinterprets whichever locator it
  *          is handed.
@@ -384,7 +384,7 @@ typedef herr_t (*H5Z_read_blob_func_t)(hid_t file_id, H5Z_blob_loc_t loc, void *
  *          via H5Pcopy() of the creating property list), and this callback
  *          fires only when the last reference is released, which is not
  *          necessarily at that dataset's own close if a copy outlives it.
- *          #H5Zregister and #H5Zregister3 require this field to be non-NULL
+ *          #H5Zregister requires this field to be non-NULL
  *          whenever \c read_blob is; leaving it NULL is valid only when
  *          \c read_blob is also NULL, in which case the library both
  *          allocates and releases the buffer itself.
