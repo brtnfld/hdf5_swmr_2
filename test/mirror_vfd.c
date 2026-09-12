@@ -1931,6 +1931,7 @@ test_on_disk_zoo(const struct mt_opts *opts)
     hid_t                        file_id    = H5I_INVALID_HID;
     hid_t                        grp_id     = H5I_INVALID_HID;
     hid_t                        fapl_id    = H5I_INVALID_HID;
+    struct timespec              lastmsgtime = {0, 0};
 
     TESTING("'Zoo' of on-disk structures");
 
@@ -1955,7 +1956,9 @@ test_on_disk_zoo(const struct mt_opts *opts)
      */
 
     if (pass)
-        create_zoo(file_id, grp_name, 0);
+        pass = create_zoo(
+            file_id, grp_name, &lastmsgtime,
+            (zoo_config_t){.proc_num = 0, .skip_varlen = false, .skip_compact = false, .msgival = {0, 0}});
     if (pass) {
         if (H5Fclose(file_id) < 0)
             TEST_ERROR;
@@ -1963,7 +1966,10 @@ test_on_disk_zoo(const struct mt_opts *opts)
             TEST_ERROR;
     }
     if (pass)
-        validate_zoo(file_id, grp_name, 0); /* sanity-check */
+        /* sanity-check */
+        pass = validate_zoo(
+            file_id, grp_name, &lastmsgtime,
+            (zoo_config_t){.proc_num = 0, .skip_varlen = false, .skip_compact = false, .msgival = {0, 0}});
 
     if (!pass) {
         printf("%s", failure_mssg);
